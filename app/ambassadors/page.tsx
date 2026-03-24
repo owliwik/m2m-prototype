@@ -24,10 +24,9 @@ export default function AmbassadorsPage() {
         style={{
           backgroundColor: '#F7F8FA',
           borderBottom: '1px solid #E2E5EA',
-          padding: '40px 24px',
         }}
       >
-        <div style={{ maxWidth: 1120, margin: '0 auto' }}>
+        <div style={{ maxWidth: 1080, margin: '0 auto', padding: '40px 48px' }}>
           <p
             style={{
               fontSize: 12,
