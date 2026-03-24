@@ -55,41 +55,45 @@ function ArticleCard({ post }: { post: FeedPost }) {
   return (
     <Link href={`/post/${post.id}`} style={{ display: 'block', textDecoration: 'none', color: 'inherit', marginBottom: 12 }}>
       <div
-        style={{ backgroundColor: '#FFFFFF', border: '1px solid #ECEEF2', borderRadius: 10, padding: '16px 18px', transition: 'border-color 150ms', position: 'relative' }}
+        style={{ backgroundColor: '#FFFFFF', border: '1px solid #ECEEF2', borderRadius: 10, padding: '18px 20px', transition: 'border-color 150ms' }}
         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#C8CDD6' }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#ECEEF2' }}
       >
-        {post.pinned && (
-          <div style={{ position: 'absolute', top: 10, right: 12, fontSize: 10, letterSpacing: '0.08em', color: '#A83131', fontFamily: 'var(--font-noto-sans), sans-serif', backgroundColor: '#FAEAEA', padding: '2px 7px', borderRadius: 6, border: '1px solid #F0C8C8' }}>
-            置顶
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          {/* Left: avatar */}
+          <div style={{ width: 40, height: 40, borderRadius: '50%', backgroundColor: schoolColor.bg, color: schoolColor.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, flexShrink: 0, marginTop: 4, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+            {post.authorName[0]}
           </div>
-        )}
-        <div style={{ display: 'flex', gap: 7, marginBottom: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: schoolColor.bg, color: schoolColor.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            {post.school}
-          </span>
-          <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: typeColor.bg, color: typeColor.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            {post.contentType}
-          </span>
-        </div>
-        <div style={{ fontSize: 16, fontWeight: 500, color: '#0D0D0D', lineHeight: 1.45, marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-          {post.title}
-        </div>
-        <div style={{ fontSize: 12, color: '#4A4F5A', lineHeight: 1.6, marginBottom: 11, display: '-webkit-box' as React.CSSProperties['display'], WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' as React.CSSProperties['WebkitBoxOrient'], overflow: 'hidden', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-          {post.summary}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{ width: 18, height: 18, borderRadius: '50%', backgroundColor: schoolColor.bg, color: schoolColor.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7, fontWeight: 700, flexShrink: 0, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {post.authorName[0]}
+          {/* Right: content */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', gap: 7, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: schoolColor.bg, color: schoolColor.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                {post.school}
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: typeColor.bg, color: typeColor.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                {post.contentType}
+              </span>
+              {post.pinned && (
+                <span style={{ fontSize: 10, letterSpacing: '0.08em', color: '#A83131', fontFamily: 'var(--font-noto-sans), sans-serif', backgroundColor: '#FAEAEA', padding: '2px 7px', borderRadius: 6, border: '1px solid #F0C8C8' }}>
+                  置顶
+                </span>
+              )}
             </div>
-            <span style={{ fontSize: 11, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {post.authorName} · {formatDate(post.daysAgo)}
-            </span>
+            <div style={{ fontSize: 16, fontWeight: 500, color: '#0D0D0D', lineHeight: 1.4, marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+              {post.title}
+            </div>
+            <div style={{ fontSize: 13, color: '#4A4F5A', lineHeight: 1.6, marginBottom: 12, display: '-webkit-box' as React.CSSProperties['display'], WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as React.CSSProperties['WebkitBoxOrient'], overflow: 'hidden', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+              {post.summary}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                {post.authorName} · {formatDate(post.daysAgo)}
+              </span>
+              <span style={{ fontSize: 12, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                {formatViews(post.views)}
+              </span>
+            </div>
           </div>
-          <span style={{ fontSize: 11, color: '#B0B5C0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            {formatViews(post.views)}
-          </span>
         </div>
       </div>
     </Link>

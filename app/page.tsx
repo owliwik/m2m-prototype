@@ -94,7 +94,7 @@ export default function LandingPage() {
             margin: '0 auto 28px',
           }}
         >
-          走过这段路的人，就在这里
+          你想知道的，刚好有人经历过
         </h1>
 
         <p
