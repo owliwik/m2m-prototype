@@ -1,11 +1,82 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
+import type { User } from '@supabase/supabase-js'
+import { supabase } from '@/app/lib/supabase'
 
 export default function Nav() {
   const pathname = usePathname()
+  const router = useRouter()
   const isLanding = pathname === '/'
+  const hideNav = pathname === '/login' || pathname === '/signup'
+
+  const [user, setUser] = useState<User | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [isAmbassador, setIsAmbassador] = useState(false)
+
+  useEffect(() => {
+    if (hideNav) return
+
+    let cancelled = false
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (cancelled) return
+      setUser(data.user ?? null)
+      setAuthReady(true)
+    })
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+      setAuthReady(true)
+    })
+
+    return () => {
+      cancelled = true
+      sub.subscription.unsubscribe()
+    }
+  }, [hideNav])
+
+  // Check role whenever user changes. The role lives in a separate
+  // DB row, so we must fetch it async; setState in the effect is the
+  // intended pattern.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!user) {
+      setIsAdmin(false)
+      setIsAmbassador(false)
+      return
+    }
+    let cancelled = false
+    supabase
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled) return
+        setIsAdmin(data?.role === 'admin')
+        setIsAmbassador(data?.role === 'ambassador')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [user])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  async function handleSignOut() {
+    await supabase.auth.signOut()
+    router.push('/login')
+  }
+
+  if (hideNav) return null
+
+  const displayName =
+    (user?.user_metadata?.name as string | undefined) ??
+    user?.email?.split('@')[0] ??
+    ''
 
   return (
     <header
@@ -49,12 +120,75 @@ export default function Nav() {
           <nav style={{ display: 'flex', gap: 32, alignItems: 'center' }}>
             <NavLink href="/feed" label="内容" active={pathname === '/feed' || pathname.startsWith('/feed/')} />
             <NavLink href="/ambassadors" label="大使" active={pathname === '/ambassadors'} />
+            {isAmbassador && (
+              <NavLink href="/my/inbox" label="收件箱" active={pathname === '/my/inbox' || pathname.startsWith('/my/inbox/')} />
+            )}
+            {isAdmin && (
+              <NavLink href="/admin" label="审核" active={pathname === '/admin' || pathname.startsWith('/admin/')} />
+            )}
           </nav>
         )}
 
         {/* Right side */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          {isLanding ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, minHeight: 36 }}>
+          {!authReady ? null : user ? (
+            <>
+              {!isLanding && (
+                <Link
+                  href="/ask"
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 500,
+                    backgroundColor: '#1F4388',
+                    color: '#FFFFFF',
+                    padding: '8px 18px',
+                    borderRadius: 8,
+                    textDecoration: 'none',
+                    letterSpacing: '0.01em',
+                    transition: 'background-color 150ms',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#183272')}
+                  onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#1F4388')}
+                >
+                  提问
+                </Link>
+              )}
+              <span
+                style={{
+                  fontSize: 13,
+                  color: '#4A4F5A',
+                  fontFamily: 'var(--font-noto-sans), sans-serif',
+                  letterSpacing: '0.01em',
+                  maxWidth: 140,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+                title={displayName}
+              >
+                {displayName}
+              </span>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                style={{
+                  fontSize: 13,
+                  color: '#8A8F9A',
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontFamily: 'var(--font-noto-sans), sans-serif',
+                  letterSpacing: '0.01em',
+                  padding: 0,
+                  transition: 'color 150ms',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.color = '#A83131')}
+                onMouseLeave={e => (e.currentTarget.style.color = '#8A8F9A')}
+              >
+                退出
+              </button>
+            </>
+          ) : isLanding ? (
             <>
               <Link
                 href="/feed"
@@ -72,7 +206,7 @@ export default function Nav() {
                 浏览内容
               </Link>
               <Link
-                href="/ask"
+                href="/login"
                 style={{
                   fontSize: 14,
                   fontWeight: 500,
@@ -92,7 +226,7 @@ export default function Nav() {
             </>
           ) : (
             <Link
-              href="/ask"
+              href="/login"
               style={{
                 fontSize: 14,
                 fontWeight: 500,

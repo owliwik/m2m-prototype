@@ -110,3 +110,42 @@ h1, h2, h3, h4, h5, h6 {
   animation: modalSlideUp 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: 40ms;
 }
+
+/* Login page register-step transitions */
+@keyframes stepSlideInRight {
+  from { opacity: 0; transform: translateX(28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes stepSlideInLeft {
+  from { opacity: 0; transform: translateX(-28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.login-step-forward {
+  animation: stepSlideInRight 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.login-step-backward {
+  animation: stepSlideInLeft 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* Login page brand-text crossfade */
+@keyframes brandTextIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.brand-text-in {
+  animation: brandTextIn 280ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* Auth form: subtle fade-in on route change (/login ↔ /signup) */
+@keyframes authFormFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.auth-form-fade-in {
+  animation: authFormFadeIn 220ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}

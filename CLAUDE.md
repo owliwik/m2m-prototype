@@ -5,18 +5,77 @@
 
 M2M（Mentor to Mentee）是北京四中在校生专属的升学知识与校友对接平台。连接正在申请海外大学的高中生与已就读的四中校友（大使）。内容不对外公开，仅限学校邮箱用户访问。
 
-这是一个纯前端原型，使用假数据（hardcode），不需要真实数据库或登录系统。目的是给学校老师和学生展示产品形态，收集反馈。
+最初是给学校老师和学生展示产品形态、收集反馈的纯前端原型。目前已经过渡到一个有真实认证 + 数据库的早期 MVP 阶段，仍在补完整个 ask→approve→answer→publish 链路。
 
 ---
 
 ## 技术栈
 
-- Next.js 14（App Router）
-- Tailwind CSS
+- Next.js 16（App Router, Turbopack）
+- Tailwind CSS（极简，搭配 inline styles）
 - TypeScript
-- 假数据直接写在组件或单独的 `data/` 目录里
+- Supabase：
+  - Postgres + PostgREST 作为后端数据源
+  - Supabase Auth（email/password 注册 + 6 位数字 OTP 邮箱验证）
+  - 客户端 anon-key client：`app/lib/supabase.ts` 导出 `supabase`
+  - 类型：`app/lib/database.types.ts`（由 `supabase gen types` 生成；手动维护过几列，比如 `requests.visibility` 和 `request_visibility` 枚举）
+  - 环境变量：`NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`SUPABASE_SERVICE_ROLE_KEY`
+- Resend SDK 已经在 `package.json`，但**目前没有任何代码在用** —— 留给后续邮件通知（admin/ambassador/student）
+- SMTP：通过 Supabase 内置走 263 企业邮箱（`m2m@bhsfic.com`），已经在 Supabase Dashboard 配置好
 
-不需要任何后端、数据库、或认证系统。
+---
+
+## 关键架构
+
+### 页面层级
+- 所有页面都是 client component（`'use client'`），用 `useEffect` 从 Supabase 拉数据。即便不需要交互也不拆 server/client，因为登录态需要在客户端读。
+- 老的假数据还留在 `app/data/index.ts`，但只有 landing page (`/`) 和部分类型/常量还在用它。其它页面已全部迁到 Supabase。
+
+### 认证
+- `/login` 和 `/signup` 在 `app/(auth)/` route group 下，共享一个分屏布局（左蓝色品牌区、右表单）。Nav 在这两条路径上不渲染。
+- 注册流程是 3 步：name+email → password → 6 位 OTP。
+  - Step 2 调 `supabase.auth.signUp({ email, password, options: { data: { name } } })` 触发 OTP 邮件
+  - Step 3 调 `supabase.auth.verifyOtp({ email, token, type: 'signup' })` 验证
+  - 验证成功后调 `POST /api/auth/sync-profile`（携带 JWT）把 `public.users` 行补上
+- `/api/auth/sync-profile` 用 service role key，**幂等**（已存在就 no-op）。replaces 旧的 `/api/auth/register`。
+- 受保护页面用 `useRequireAuth()` hook（`app/lib/auth.ts`）做 client-side gate；未登录会被 `router.replace('/login?redirect=<current path+query>')` 弹出。
+
+### Supabase 配置（在 Dashboard 里手动设置，不在代码里）
+- Authentication → Providers → Email → "Confirm email" 必须 **ON**
+- Authentication → Sign In / Up → Email OTP Length = **6**
+- Authentication → Email Templates → "Confirm signup" 用 `{{ .Token }}`（不是 `{{ .ConfirmationURL }}`），中文模板
+- Project Settings → Auth → Rate Limits → "Rate limit for sending emails" 已经调大到 30/hour（默认 2 太严）
+
+### RLS
+- 所有 7 张表都开了 RLS。helper `public.is_admin()` 是 SECURITY DEFINER 函数。
+- **关键 gotcha**：`users.id` 是 `text` 不是 `uuid`，而 `auth.uid()` 是 uuid。所有策略里的 `auth.uid()` 比较都要写成 `auth.uid()::text`。policies 里凡是 `auth.uid() = some_user_id_column` 都需要这个 cast。
+- 完整 RLS SQL 见 memory note `setup_rls.md`。可重跑（用了 `DROP POLICY IF EXISTS`）。
+
+### Schema 要点
+- `ambassadors.id` ≡ `users.id`（1:1 FK，共享主键）
+- `posts.author_id` → `users.id`（**不是** `ambassadors.id`）
+- `users ↔ posts` 有两条 FK（`author_id` 和 `questioner_id`），所以 select 必须显式写 disambiguator：`user:users!ambassadors_id_fkey(*)` / `posts!posts_author_id_fkey(...)` 等
+- `requests` 表有 `visibility` 列（`'public' | 'private'`），表达"答完是否公开"
+- `request_status` 枚举：`pending | approved | rejected | done`
+- `assignment_status`（在 `request_ambassadors`）：`sent | responded | declined`
+
+---
+
+## 当前路由
+
+| Path | 说明 | Auth |
+|---|---|---|
+| `/` | Landing | 公开 |
+| `/login` | 登录 | 公开 |
+| `/signup` | 3-step 注册 + OTP | 公开 |
+| `/feed` | 内容列表 | 必须登录 |
+| `/feed/[id]` | 文章 / Note / Q&A 详情 | 必须登录 |
+| `/ambassadors` | 大使目录 | 必须登录 |
+| `/schools/[school]` | 学校页 | 必须登录 |
+| `/ask` | 提问表单（写 `requests` + `request_ambassadors`） | 必须登录 |
+| `/api/auth/sync-profile` | 同步 profile 行（service role） | JWT |
+
+**尚未实现**：`/admin`（审核面板）、ambassador 答题页、`/me` 我的请求/通知页、所有邮件通知。详见 memory note `userstory_progress.md`。
 
 ---
 
@@ -29,7 +88,7 @@ M2M（Mentor to Mentee）是北京四中在校生专属的升学知识与校友�
 
 ### 配色系统
 
-**严禁使用Anthropic/Claude的UI配色变量（--color-background-primary等）。** 使用以下自定义配色系统：
+**严禁使用 Anthropic/Claude 的 UI 配色变量（--color-background-primary 等）。** 使用以下自定义配色系统：
 
 ```css
 :root {
@@ -59,13 +118,13 @@ M2M（Mentor to Mentee）是北京四中在校生专属的升学知识与校友�
 
 ### 圆角规范
 
-不要全方形（太尖锐），也不要全圆（显假和AI感）：
+不要全方形（太尖锐），也不要全圆（显假和 AI 感）：
 - 卡片：`border-radius: 10px`
 - 按钮：`border-radius: 8px`
 - 标签/pill：`border-radius: 6px`
 - 输入框：`border-radius: 8px`
 - 头像：`border-radius: 50%`
-- 学校logo占位：`border-radius: 10px`
+- 学校 logo 占位：`border-radius: 10px`
 
 **严禁：** `border-radius: 0` 或 `border-radius: 9999px`
 
@@ -73,100 +132,26 @@ M2M（Mentor to Mentee）是北京四中在校生专属的升学知识与校友�
 
 - **标题/Wordmark：** Noto Serif SC（衬线，学院感）
 - **正文：** Noto Sans SC
-- **严禁：** 系统默认sans-serif、Arial、Inter用于中文
+- **严禁：** 系统默认 sans-serif、Arial、Inter 用于中文
 
 ### 边框与层级
 
 - 所有卡片：`1px solid var(--m2m-border)`
-- hover时：`1px solid var(--m2m-border-strong)`
-- 无box-shadow，用边框代替层级感
+- hover 时：`1px solid var(--m2m-border-strong)`
+- 无 box-shadow，用边框代替层级感
 
 ### 交互状态
 
-每个可点击元素必须有精心设计的hover state：
-- 卡片hover：边框颜色加深 + 背景轻微变冷灰
-- 按钮hover：背景色加深10%
-- 文字链接hover：颜色变为 `--m2m-navy`
-- 大使卡footer "联系 →" hover：整行背景变为`--m2m-bg-muted`，文字颜色变深
-
----
-
-## 页面结构
-
-共四个页面：
-
-1. `/` — Landing page
-2. `/feed` — Feed页
-3. `/ambassadors` — 大使目录页
-4. `/ask` — 提问/申请页
-
----
-
-## 页面一：Landing Page（`/`）
-
-### 导航栏
-- 左：M2M（Noto Serif SC，wordmark感）
-- 右：「浏览内容」文字按钮 + 「用学校邮箱登录」（`--m2m-navy`底色）
-
-### Hero
-- Eyebrow：北京四中 · 在校生专属
-- 大标题：申请季，你需要一个真正了解你的人
-- 副标题：M2M 连接正在申请的四中同学与已在海外就读的四中校友。不是中介，不是Reddit，是真正经历过同一段路的人告诉你他们最想让你知道的事。
-- 两个按钮：「用学校邮箱注册」（navy主色）、「先看看内容」（描边）
-- 小字：仅限 @bhsfic.com 学生邮箱 · 免费使用
-- 统计数字（三格横排，有细边框分隔）：24位在校大使 / 12所覆盖院校 / 38篇原创内容
-
-### 为什么是M2M（三栏）
-- 有针对性的信息
-- 没有商业利益
-- 仅限四中学生
-
-### 校友怎么说（2×2引用卡片）
-
-### 怎么开始（三步）
-
-### 底部CTA
-
----
-
-## 页面二：Feed页（`/feed`）
-
-### 顶部Hero（紧凑）
-- 左：M2M + 「北京四中校友的第一手升学经验」
-- 右：「浏览大使」次要 + 「联系大使」主要
-
-### 筛选栏（sticky）
-学校标签 + 分隔线 + 内容类型
-
-### 内容卡片
-- 学校标签 + 内容类型标签 + 置顶标签（可选）
-- 标题
-- 摘要（2行截断）
-- 作者头像 + 姓名 + 届别 + 时间 + 浏览数
-
-### 文章全文页排版要求（重要）
-高级博客感，参考 Substack/Medium：
-- 正文最大宽度680px，居中，左右充足留白
-- 标题用Noto Serif SC，正文用Noto Sans SC，形成对比
-- 行高1.85，段落间距1.5em
-- 作者区域有设计感（头像+姓名+学校，有分隔线）
-- 顶部有学校标签和内容类型标签
-- 排版干净，大量留白，不要堆砌元素
-
----
-
-## 页面三：大使目录页（`/ambassadors`）
-
-### 筛选栏
-
-### 大使网格（两列）
-
-卡片结构：
-1. **头部**（可点击）：52px圆形头像 + 姓名（16px 500）+ 学校tag + 专业届别 + 一句话简介
-2. **内容预览**（2条，可独立点击）：类型标签 + 标题（1行截断）
-3. **Footer**（`--m2m-bg-subtle`底色，hover变`--m2m-bg-muted`）：左「X篇内容」+ 右「联系 →」
+每个可点击元素必须有精心设计的 hover state：
+- 卡片 hover：边框颜色加深 + 背景轻微变冷灰
+- 按钮 hover：背景色加深 10%
+- 文字链接 hover：颜色变为 `--m2m-navy`
+- 大使卡 footer "联系 →" hover：整行背景变为 `--m2m-bg-muted`，文字颜色变深
 
 ### 学校配色（偏冷，无暖黄）
+
+学校配色既存在前端常量里，也存在 `schools.color_bg/color_fg` DB 列里。DB 是权威，但页面有 fallback。
+
 | 学校 | 背景 | 文字 |
 |---|---|---|
 | CMU | #E8F0FC | #1F4388 |
@@ -177,87 +162,29 @@ M2M（Mentor to Mentee）是北京四中在校生专属的升学知识与校友�
 | Columbia | #EBF3E0 | #2A5010 |
 
 ### 内容类型标签配色
+
 | 类型 | 背景 | 文字 |
 |---|---|---|
-| 文章 | #E8F0FC | #1F4388 |
-| 问答 | #E1F0EB | #0A4A35 |
-| Tips | #FAF0E0 | #6B3A08 |
-| 清单 | #EEEDFB | #3C3489 |
-| 推荐 | #FAE8E8 | #7A2020 |
-
----
-
-## 页面四：提问页（`/ask`）
-
-### 第一步：你想了解什么？
-
-院校和大使**平级**，两张全宽卡片竖向叠放，视觉权重相近，用细微设计区分：
-
-**院校卡片（`--m2m-bg-subtle`底色）：**
-- 小标签：目标院校（uppercase，11px）
-- 横向排列：学校logo占位（52px圆角方形，用学校主色填充首字母）+ 右侧
-  - 中文校名（17px，500）
-  - 英文校名（12px，`--m2m-text-tertiary`）
-  - 简介（12px，如"宾夕法尼亚州匹兹堡 · 私立研究型大学"）
-- Footer：右侧「换一所院校」下划线链接
-
-**大使卡片（白底）：**
-- 小标签：大使（uppercase，11px）
-- 横向排列：44px圆形头像 + 右侧
-  - 姓名（15px，500）
-  - 学校tag + 专业届别
-  - 一句话简介（12px）
-- Footer：右侧「换一位大使」下划线链接
-
-区分方式：院校卡灰底+方形logo，大使卡白底+圆形头像。不要用颜色或加粗边框过度区分。
-
-### 第二步：你想问什么？
-
-- 问题描述（必填）：textarea，50字下限，实时计数，到50字变navy色
-- 偏好沟通方式：文字回复 / 视频通话 / 电话
-- 预计时长：15分钟 / 30分钟 / 不确定
-
-### 第三步：验证身份
-
-- 邮箱输入 + 发送验证码
-- 提交按钮默认disabled，验证后激活（变navy填充色）
-- 提交成功原地替换，显示对勾+说明文字
-- 不说"已发送给大使"
-
----
-
-## 假数据
-
-### 大使列表
-
-```typescript
-const ambassadors = [
-  { name: "张明远", school: "CMU", dept: "计算机科学", year: "2024届", bio: "专注CS申请文书和CMU校园生活", posts: 6 },
-  { name: "李晓彤", school: "Duke", dept: "经济", year: "2023届", bio: "聊Duke校园生活和文理学院选课逻辑", posts: 5 },
-  { name: "陈思远", school: "Penn", dept: "Wharton 商科", year: "2023届", bio: "商科选校和申请策略，同时拿过Wharton和Stern", posts: 4 },
-  { name: "王子轩", school: "Cornell", dept: "机械工程", year: "2024届", bio: "理工申请和Cornell工程课程压力", posts: 3 },
-  { name: "赵雨欣", school: "NYU", dept: "电影制作", year: "2023届", bio: "艺术类申请和作品集准备", posts: 2 },
-  { name: "刘雨桐", school: "Columbia", dept: "社会学", year: "2024届", bio: "哥大城市生活和文社科申请思路", posts: 2 },
-]
-```
-
-### 内容列表（Feed用）
-
-```typescript
-const posts = [
-  { title: "从四中到CMU SCS：我的文书到底写了什么", school: "CMU", type: "申请文书", author: "张明远", views: 1200, days: 3, pinned: true },
-  { title: "Duke第一年：我最后悔没提前知道的五件事", school: "Duke", type: "校园生活", author: "李晓彤", views: 876, days: 7 },
-  { title: "Wharton vs. 其他商科：从四中学生的角度怎么选", school: "Penn", type: "选校建议", author: "陈思远", views: 654, days: 14 },
-  { title: "Cornell工程的课程压力：真实的一个学期是什么样的", school: "Cornell", type: "学术", author: "王子轩", views: 431, days: 21 },
-]
-```
+| 文章 | #FAE8E8 | #A83131 |
+| 问答 | #F5E0E0 | #8C2020 |
+| Tips | #FAEEED | #993025 |
+| 清单 | #F7E6E6 | #7A2828 |
+| 推荐 | #F5E8E8 | #9C3030 |
 
 ---
 
 ## 注意事项
 
-- 所有内容中文优先
-- 不需要实现真实的筛选逻辑，点击标签有视觉反馈即可
-- 不需要真实的表单提交，模拟流程即可
-- 移动端响应式暂时不是优先级，先做好桌面端
-- 代码质量不是优先级，原型清晰可用即可
+- 中文优先，所有 user-facing 文本是中文。
+- 移动端响应式暂时不是优先级，先做好桌面端。
+- 代码质量不是优先级，但 **auth、RLS、必要的输入校验不能省**。
+- 不使用 git workflow：不开分支、不开 PR、直接改 main。详见 memory note `feedback_no_git_workflow.md`。
+- 不喜欢维护 SQL trigger/function。可以接受一次性 SQL（schema 变更、RLS、enum）粘到 Supabase Dashboard，但避免会持续维护的 DB 逻辑（trigger、cron job 等）。
+- 如果在 worktree 而不是 main 上启动（路径含 `.claude/worktrees/`），先提醒用户 —— 他们更愿意直接改 main。
+- 任何时候不确定页面/页面间状态时，**优先看 memory notes 而不是猜测**：
+  - `project_stack_migration.md` — Supabase 迁移背景
+  - `feedback_client_component_architecture.md` — 为什么页面都是 client component
+  - `feedback_no_git_workflow.md` — 不开 PR
+  - `setup_supabase_auth.md` — auth/OTP 配置全貌
+  - `setup_rls.md` — RLS policies + text/uuid cast 注意事项
+  - `userstory_progress.md` — 用户故事 10 步走到哪一步了

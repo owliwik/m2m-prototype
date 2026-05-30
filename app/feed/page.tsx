@@ -1,276 +1,347 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import Link from 'next/link'
-import {
-  allFeedItems,
-  schoolColors,
-  contentTypeColors,
-  allSchools,
-  type SchoolKey,
-  type ContentType,
-  type FeedPost,
-  type EssayPost,
-  type QAPost,
+import PageHeader from '../components/PageHeader'
+import { ArticleCard, EssayCard, QACard } from '../components/PostCards'
+import { SidebarCard, ContentTypeFilter } from '../components/Sidebar'
+import { supabase } from '@/app/lib/supabase'
+import { useRequireAuth } from '@/app/lib/auth'
+import type { Database } from '@/app/lib/database.types'
+import type {
+  FeedPost,
+  EssayPost,
+  QAPost,
+  SchoolKey,
+  ContentType,
 } from '../data'
 
 const sidebarTypes: ContentType[] = ['申请文书', '校园生活', '学术', '选校建议', '随笔', '公开问答']
 
-function formatViews(n: number): string {
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
-  return String(n)
+const contentTypeColors: Record<string, { bg: string; fg: string }> = {
+  '文章':    { bg: '#FAE8E8', fg: '#A83131' },
+  '申请文书': { bg: '#FAE8E8', fg: '#A83131' },
+  '问答':    { bg: '#F5E0E0', fg: '#8C2020' },
+  'Tips':   { bg: '#FAEEED', fg: '#993025' },
+  '清单':    { bg: '#F7E6E6', fg: '#7A2828' },
+  '推荐':    { bg: '#F5E8E8', fg: '#9C3030' },
+  '校园生活': { bg: '#FAE8E8', fg: '#A83131' },
+  '选校建议': { bg: '#F5E0E0', fg: '#8C2020' },
+  '学术':    { bg: '#FAEEED', fg: '#993025' },
+  '随笔':    { bg: '#F7E6E6', fg: '#7A2828' },
+  '公开问答': { bg: '#F5E8E8', fg: '#9C3030' },
 }
 
-function formatDate(daysAgo: number): string {
-  if (daysAgo === 0) return '今天'
-  if (daysAgo < 7) return `${daysAgo}天前`
-  if (daysAgo < 30) return `${Math.floor(daysAgo / 7)}周前`
-  return `${Math.floor(daysAgo / 30)}个月前`
+type SchoolRow = Database['public']['Tables']['schools']['Row']
+type PostRow = Database['public']['Tables']['posts']['Row']
+type UserRow = Database['public']['Tables']['users']['Row']
+
+type PostWithRels = PostRow & {
+  author: Pick<UserRow, 'id' | 'name'>
+  school: SchoolRow
 }
 
-function SchoolTag({ school }: { school: SchoolKey }) {
-  const c = schoolColors[school]
+type SchoolWithAmbassadors = SchoolRow & {
+  ambassadors: Array<{ id: string; user: { id: string; name: string } }>
+}
+
+function schoolColor(school: Pick<SchoolRow, 'color_bg' | 'color_fg'>) {
+  return {
+    bg: school.color_bg ?? '#EEF0F4',
+    fg: school.color_fg ?? '#4A4F5A',
+  }
+}
+
+// DB schools use lowercase ids; mock SchoolKey uses mixed case (CMU, Duke, NYU, …).
+// PostCards still reads schoolColors[post.school] from the mock map, so we must map back.
+const schoolIdToKey: Record<string, SchoolKey> = {
+  cmu: 'CMU',
+  duke: 'Duke',
+  penn: 'Penn',
+  cornell: 'Cornell',
+  nyu: 'NYU',
+  columbia: 'Columbia',
+}
+
+function toSchoolKey(id: string): SchoolKey {
+  return schoolIdToKey[id.toLowerCase()] ?? ('CMU' as SchoolKey)
+}
+
+function daysSince(iso: string): number {
+  const then = new Date(iso).getTime()
+  const now = Date.now()
+  return Math.max(0, Math.floor((now - then) / 86_400_000))
+}
+
+/* ─── Adapters: DB row → mock-shape expected by PostCards ─── */
+
+function toArticleShape(p: PostWithRels): FeedPost {
+  return {
+    kind: 'article',
+    id: p.id,
+    title: p.title ?? '',
+    summary: p.summary ?? '',
+    school: toSchoolKey(p.school.id),
+    contentType: (p.content_type ?? '文章') as ContentType,
+    authorName: p.author.name,
+    views: p.views,
+    daysAgo: daysSince(p.created_at),
+    pinned: p.pinned,
+  }
+}
+
+function toEssayShape(p: PostWithRels): EssayPost {
+  return {
+    kind: 'essay',
+    id: p.id,
+    school: toSchoolKey(p.school.id),
+    contentType: '随笔',
+    authorName: p.author.name,
+    authorYear: '',
+    daysAgo: daysSince(p.created_at),
+    views: p.views,
+    body: p.body ?? '',
+    comments: [],
+  }
+}
+
+function toQAShape(p: PostWithRels): QAPost {
+  return {
+    kind: 'qa',
+    id: p.id,
+    school: toSchoolKey(p.school.id),
+    contentType: '公开问答',
+    daysAgo: daysSince(p.created_at),
+    views: p.views,
+    question: p.question ?? '',
+    questionYear: '',
+    questionDaysAgo: 0,
+    answerAuthorName: p.author.name,
+    answerAuthorYear: '',
+    answer: p.answer ?? '',
+    comments: [],
+  }
+}
+
+/* ─── School community module ─── */
+
+function SchoolCommunityModule({
+  schools,
+  postCounts,
+}: {
+  schools: SchoolWithAmbassadors[]
+  postCounts: Record<string, number>
+}) {
+  const topSchools = [...schools]
+    .sort((a, b) => (postCounts[b.id] ?? 0) - (postCounts[a.id] ?? 0))
+    .slice(0, 4)
+
   return (
-    <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: c.bg, color: c.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-      {school}
-    </span>
-  )
-}
+    <div style={{ border: '1px solid #ECEEF2', borderRadius: 10, overflow: 'hidden' }}>
+      {/* Header */}
+      <div style={{ padding: '12px 14px 10px', borderBottom: '1px solid #ECEEF2' }}>
+        <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#B0B5C0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+          学校社区
+        </div>
+      </div>
 
-function TypeTag({ contentType }: { contentType: ContentType }) {
-  const c = contentTypeColors[contentType]
-  return (
-    <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: c.bg, color: c.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-      {contentType}
-    </span>
-  )
-}
+      {/* School items */}
+      {topSchools.map((school, i) => {
+        const colors = schoolColor(school)
+        const allAmbs = school.ambassadors
+        const visibleAmbs = allAmbs.slice(0, 2)
+        const overflowCount = allAmbs.length - visibleAmbs.length
+        return (
+          <Link
+            key={school.id}
+            href={`/schools/${school.id.toLowerCase()}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '10px 14px',
+              borderBottom: i < topSchools.length - 1 ? '1px solid #ECEEF2' : 'none',
+              textDecoration: 'none',
+              color: 'inherit',
+              transition: 'background-color 150ms',
+              cursor: 'pointer',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#F9FAFB')}
+            onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            {/* School icon */}
+            <div style={{
+              width: 28,
+              height: 28,
+              borderRadius: 8,
+              backgroundColor: colors.fg,
+              color: '#FFFFFF',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 12,
+              fontWeight: 600,
+              flexShrink: 0,
+              fontFamily: 'var(--font-noto-sans), sans-serif',
+            }}>
+              {school.name_zh[0]}
+            </div>
 
-/* ─── Article card ─── */
+            {/* Name + count */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: '#0D0D0D', fontFamily: 'var(--font-noto-sans), sans-serif', marginBottom: 1 }}>
+                {school.name_zh}
+              </div>
+              <div style={{ fontSize: 11, color: '#B0B5C0', fontFamily: 'var(--font-noto-sans), sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {postCounts[school.id] ?? 0} 篇内容
+              </div>
+            </div>
 
-function ArticleCard({ post }: { post: FeedPost }) {
-  const schoolColor = schoolColors[post.school]
-  const typeColor = contentTypeColors[post.contentType]
-
-  return (
-    <Link href={`/post/${post.id}`} style={{ display: 'block', textDecoration: 'none', color: 'inherit', marginBottom: 12 }}>
-      <div
-        style={{ backgroundColor: '#FFFFFF', border: '1px solid #ECEEF2', borderRadius: 10, padding: '18px 20px', transition: 'border-color 150ms' }}
-        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#C8CDD6' }}
-        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#ECEEF2' }}
-      >
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
-          {/* Left: avatar */}
-          <div style={{ width: 40, height: 40, borderRadius: '50%', backgroundColor: schoolColor.bg, color: schoolColor.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, flexShrink: 0, marginTop: 4, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            {post.authorName[0]}
-          </div>
-          {/* Right: content */}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', gap: 7, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: schoolColor.bg, color: schoolColor.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                {post.school}
-              </span>
-              <span style={{ fontSize: 11, fontWeight: 600, backgroundColor: typeColor.bg, color: typeColor.fg, padding: '2px 7px', borderRadius: 6, letterSpacing: '0.04em', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                {post.contentType}
-              </span>
-              {post.pinned && (
-                <span style={{ fontSize: 10, letterSpacing: '0.08em', color: '#A83131', fontFamily: 'var(--font-noto-sans), sans-serif', backgroundColor: '#FAEAEA', padding: '2px 7px', borderRadius: 6, border: '1px solid #F0C8C8' }}>
-                  置顶
-                </span>
+            {/* Ambassador avatars stacked */}
+            <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+              {visibleAmbs.map((amb, j) => (
+                <div
+                  key={amb.id}
+                  style={{
+                    width: 24,
+                    height: 24,
+                    borderRadius: '50%',
+                    backgroundColor: colors.bg,
+                    color: colors.fg,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 10,
+                    fontWeight: 700,
+                    fontFamily: 'var(--font-noto-sans), sans-serif',
+                    border: '2px solid #FFFFFF',
+                    marginLeft: j > 0 ? -10 : 0,
+                    position: 'relative',
+                    zIndex: j + 1,
+                  }}
+                >
+                  {amb.user.name[0]}
+                </div>
+              ))}
+              {overflowCount > 0 && (
+                <div
+                  style={{
+                    width: 24,
+                    height: 24,
+                    borderRadius: '50%',
+                    backgroundColor: '#EEF0F4',
+                    color: '#4A4F5A',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 10,
+                    fontWeight: 600,
+                    fontFamily: 'var(--font-noto-sans), sans-serif',
+                    border: '2px solid #FFFFFF',
+                    marginLeft: -10,
+                    position: 'relative',
+                    zIndex: visibleAmbs.length + 1,
+                  }}
+                >
+                  +{overflowCount}
+                </div>
               )}
             </div>
-            <div style={{ fontSize: 16, fontWeight: 500, color: '#0D0D0D', lineHeight: 1.4, marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {post.title}
-            </div>
-            <div style={{ fontSize: 13, color: '#4A4F5A', lineHeight: 1.6, marginBottom: 12, display: '-webkit-box' as React.CSSProperties['display'], WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as React.CSSProperties['WebkitBoxOrient'], overflow: 'hidden', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {post.summary}
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                {post.authorName} · {formatDate(post.daysAgo)}
-              </span>
-              <span style={{ fontSize: 12, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                {formatViews(post.views)}
-              </span>
-            </div>
-          </div>
-        </div>
+          </Link>
+        )
+      })}
+
+      {/* Footer */}
+      <div style={{ borderTop: '1px solid #ECEEF2' }}>
+        <Link
+          href="/ambassadors"
+          style={{
+            display: 'block',
+            textAlign: 'center',
+            padding: '10px 14px',
+            fontSize: 12,
+            color: '#8A8F9A',
+            textDecoration: 'none',
+            fontFamily: 'var(--font-noto-sans), sans-serif',
+            transition: 'color 150ms',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.color = '#1F4388')}
+          onMouseLeave={e => (e.currentTarget.style.color = '#8A8F9A')}
+        >
+          查看全部学校 →
+        </Link>
       </div>
-    </Link>
-  )
-}
-
-/* ─── Essay card ─── */
-
-function EssayCard({ item }: { item: EssayPost }) {
-  const schoolColor = schoolColors[item.school]
-
-  return (
-    <Link href={`/post/${item.id}`} style={{ display: 'block', textDecoration: 'none', color: 'inherit', marginBottom: 12 }}>
-      <div
-        style={{ backgroundColor: '#FFFFFF', border: '1px solid #ECEEF2', borderRadius: 10, padding: '16px 18px', transition: 'border-color 150ms' }}
-        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#C8CDD6' }}
-        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#ECEEF2' }}
-      >
-        <div style={{ display: 'flex', gap: 7, marginBottom: 9 }}>
-          <SchoolTag school={item.school} />
-          <TypeTag contentType={item.contentType} />
-        </div>
-        <div style={{ fontSize: 13, lineHeight: 1.65, color: '#4A4F5A', marginBottom: 11, display: '-webkit-box' as React.CSSProperties['display'], WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' as React.CSSProperties['WebkitBoxOrient'], overflow: 'hidden', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-          {item.body.replace(/\n\n/g, ' ')}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{ width: 18, height: 18, borderRadius: '50%', backgroundColor: schoolColor.bg, color: schoolColor.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7, fontWeight: 700, flexShrink: 0, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {item.authorName[0]}
-            </div>
-            <span style={{ fontSize: 11, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {item.authorName} · {formatDate(item.daysAgo)}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: 10, fontSize: 11, color: '#B0B5C0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            <span>{item.comments.length}</span>
-            <span>{formatViews(item.views)}</span>
-          </div>
-        </div>
-      </div>
-    </Link>
-  )
-}
-
-/* ─── QA card ─── */
-
-function QACard({ item }: { item: QAPost }) {
-  const schoolColor = schoolColors[item.school]
-
-  return (
-    <Link href={`/post/${item.id}`} style={{ display: 'block', textDecoration: 'none', color: 'inherit', marginBottom: 12 }}>
-      <div
-        style={{ border: '1px solid #ECEEF2', borderRadius: 10, overflow: 'hidden', transition: 'border-color 150ms' }}
-        onMouseEnter={e => ((e.currentTarget as HTMLElement).style.borderColor = '#C8CDD6')}
-        onMouseLeave={e => ((e.currentTarget as HTMLElement).style.borderColor = '#ECEEF2')}
-      >
-        <div style={{ backgroundColor: '#F7F8FA', padding: '14px 18px 12px', borderBottom: '1px solid #ECEEF2' }}>
-          <div style={{ display: 'flex', gap: 7, marginBottom: 7 }}>
-            <SchoolTag school={item.school} />
-            <TypeTag contentType={item.contentType} />
-          </div>
-          <div style={{ fontSize: 11, color: '#8A8F9A', marginBottom: 5, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            匿名同学 · {item.questionYear}
-          </div>
-          <div style={{ fontSize: 15, fontWeight: 500, lineHeight: 1.5, color: '#0D0D0D', display: '-webkit-box' as React.CSSProperties['display'], WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as React.CSSProperties['WebkitBoxOrient'], overflow: 'hidden', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            {item.question}
-          </div>
-        </div>
-        <div style={{ backgroundColor: '#FFFFFF', padding: '10px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{ width: 18, height: 18, borderRadius: '50%', backgroundColor: schoolColor.bg, color: schoolColor.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7, fontWeight: 700, flexShrink: 0, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {item.answerAuthorName[0]}
-            </div>
-            <span style={{ fontSize: 11, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              {item.answerAuthorName} 回答了
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: 10, fontSize: 11, color: '#B0B5C0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-            <span>{item.comments.length}</span>
-            <span>{formatViews(item.views)}</span>
-          </div>
-        </div>
-      </div>
-    </Link>
-  )
-}
-
-/* ─── Sidebar ─── */
-
-function SidebarCard({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #ECEEF2', borderRadius: 10, padding: 14 }}>
-      {children}
     </div>
-  )
-}
-
-function SidebarSectionTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#8A8F9A', marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-      {children}
-    </div>
-  )
-}
-
-function FilterRow({ label, count, active, onClick, variant = 'navy' }: { label: string; count: number; active: boolean; onClick: () => void; variant?: 'navy' | 'crimson' }) {
-  const activeBg = variant === 'crimson' ? '#FAE8E8' : '#E8F0FC'
-  const activeColor = variant === 'crimson' ? '#A83131' : '#1F4388'
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        width: '100%',
-        padding: '6px 8px',
-        borderRadius: 6,
-        border: 'none',
-        backgroundColor: active ? activeBg : 'transparent',
-        color: active ? activeColor : '#4A4F5A',
-        fontWeight: active ? 500 : 400,
-        cursor: 'pointer',
-        fontSize: 12,
-        fontFamily: 'var(--font-noto-sans), sans-serif',
-        textAlign: 'left',
-        transition: 'background-color 100ms',
-      }}
-      onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.backgroundColor = '#F7F8FA' }}
-      onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent' }}
-    >
-      <span>{label}</span>
-      <span style={{ fontSize: 11, color: active ? activeColor : '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif', opacity: 0.7 }}>
-        {count}
-      </span>
-    </button>
   )
 }
 
 /* ─── Main page ─── */
 
 export default function FeedPage() {
-  const [selectedSchool, setSelectedSchool] = useState<SchoolKey | null>(null)
+  const { ready: authReady } = useRequireAuth()
   const [selectedType, setSelectedType] = useState<ContentType | null>(null)
+  const [posts, setPosts] = useState<PostWithRels[]>([])
+  const [schools, setSchools] = useState<SchoolWithAmbassadors[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [retryKey, setRetryKey] = useState(0)
 
-  const filtered = allFeedItems.filter(item => {
-    if (selectedSchool && item.school !== selectedSchool) return false
-    if (selectedType && item.contentType !== selectedType) return false
+  useEffect(() => {
+    if (!authReady) return
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      setError(null)
+      const [postsRes, schoolsRes] = await Promise.all([
+        supabase
+          .from('posts')
+          .select('*, author:users!posts_author_id_fkey(*), school:schools(*)')
+          .eq('visibility', 'public')
+          .order('pinned', { ascending: false })
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('schools')
+          .select('*, ambassadors(id, user:users(id, name))'),
+      ])
+      if (cancelled) return
+      if (postsRes.error || schoolsRes.error) {
+        setError(postsRes.error?.message ?? schoolsRes.error?.message ?? '加载失败')
+        setLoading(false)
+        return
+      }
+      setPosts((postsRes.data as unknown as PostWithRels[] | null) ?? [])
+      setSchools((schoolsRes.data as unknown as SchoolWithAmbassadors[] | null) ?? [])
+      setLoading(false)
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [retryKey, authReady])
+
+  // Filter + counts
+  const filtered = posts.filter(p => {
+    if (selectedType && p.content_type !== selectedType) return false
     return true
   })
 
-  // Count totals for sidebar
-  const totalCount = allFeedItems.length
-  const schoolCounts = Object.fromEntries(
-    allSchools.map(s => [s, allFeedItems.filter(i => i.school === s).length])
-  ) as Record<SchoolKey, number>
+  const totalCount = posts.length
+  const postCountsBySchool: Record<string, number> = {}
+  for (const p of posts) {
+    postCountsBySchool[p.school.id] = (postCountsBySchool[p.school.id] ?? 0) + 1
+  }
   const typeCounts = Object.fromEntries(
-    sidebarTypes.map(t => [t, allFeedItems.filter(i => i.contentType === t).length])
+    sidebarTypes.map(t => [t, posts.filter(p => p.content_type === t).length]),
   ) as Record<ContentType, number>
 
   return (
     <div style={{ backgroundColor: '#FFFFFF', minHeight: '100vh' }}>
 
-      {/* Hero */}
-      <div style={{ backgroundColor: '#F7F8FA', borderBottom: '1px solid #E2E5EA' }}>
-        <div
-          style={{ maxWidth: 1080, margin: '0 auto', padding: '40px 48px', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}
-        >
-          <div>
-            <p style={{ fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#8A8F9A', marginBottom: 7, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-              M2M 内容库
-            </p>
-            <h1 style={{ fontFamily: 'var(--font-noto-serif), serif', fontSize: 26, fontWeight: 700, color: '#0D0D0D', lineHeight: 1.3, letterSpacing: '-0.01em' }}>
-              四中校友留下的，四中在校生来看的
-            </h1>
-          </div>
-          <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+      <PageHeader
+        eyebrow="M2M 内容库"
+        title="四中校友留下的，四中在校生来看的"
+        actions={
+          <>
             <Link
               href="/ambassadors"
               style={{ border: '1px solid #A83131', color: '#A83131', padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 500, textDecoration: 'none', letterSpacing: '0.02em', transition: 'background-color 150ms, color 150ms', display: 'inline-block' }}
@@ -287,9 +358,9 @@ export default function FeedPage() {
             >
               联系大使
             </Link>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* Content + Sidebar */}
       <div
@@ -297,23 +368,72 @@ export default function FeedPage() {
       >
         {/* Left: card grid */}
         <div style={{ flex: 1, minWidth: 0, paddingTop: 32 }}>
-          {filtered.length === 0 ? (
+          {error && (
+            <div
+              style={{
+                marginBottom: 20,
+                padding: '20px 24px',
+                border: '1px solid #E8C8C8',
+                borderRadius: 10,
+                backgroundColor: '#FAE8E8',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#7A2020', fontFamily: 'var(--font-noto-sans), sans-serif', marginBottom: 4 }}>
+                  加载失败
+                </div>
+                <div style={{ fontSize: 12, color: '#8C3A3A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                  {error}
+                </div>
+              </div>
+              <button
+                onClick={() => setRetryKey(k => k + 1)}
+                style={{
+                  padding: '8px 18px',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  fontFamily: 'var(--font-noto-sans), sans-serif',
+                  border: '1px solid #A83131',
+                  borderRadius: 8,
+                  backgroundColor: '#FFFFFF',
+                  color: '#A83131',
+                  cursor: 'pointer',
+                  transition: 'background-color 150ms',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#F7E6E6')}
+                onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#FFFFFF')}
+              >
+                重试
+              </button>
+            </div>
+          )}
+
+          {loading ? (
+            <div>
+              {Array.from({ length: 4 }).map((_, i) => <PostCardSkeleton key={i} />)}
+            </div>
+          ) : filtered.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '80px 0', color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif', fontSize: 14 }}>
               没有符合条件的内容
             </div>
           ) : (
             <div>
-              {filtered.map(item => {
-                if (item.kind === 'essay') return <EssayCard key={item.id} item={item} />
-                if (item.kind === 'qa') return <QACard key={item.id} item={item} />
-                return <ArticleCard key={item.id} post={item} />
+              {filtered.map(p => {
+                if (p.kind === 'note') return <EssayCard key={p.id} item={toEssayShape(p)} />
+                if (p.kind === 'qa') return <QACard key={p.id} item={toQAShape(p)} />
+                return <ArticleCard key={p.id} post={toArticleShape(p)} />
               })}
             </div>
           )}
         </div>
 
         {/* Right: sidebar */}
-        <div style={{ width: 196, flexShrink: 0, position: 'sticky', top: 24, display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 32 }}>
+        <div style={{ width: 260, flexShrink: 0, position: 'sticky', top: 24, display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 32 }}>
 
           {/* Search */}
           <SidebarCard>
@@ -324,50 +444,113 @@ export default function FeedPage() {
             />
           </SidebarCard>
 
-          {/* School filter */}
-          <SidebarCard>
-            <SidebarSectionTitle>学校</SidebarSectionTitle>
-            <FilterRow
-              label="全部"
-              count={totalCount}
-              active={selectedSchool === null}
-              onClick={() => setSelectedSchool(null)}
-            />
-            {allSchools.map(school => (
-              <FilterRow
-                key={school}
-                label={school}
-                count={schoolCounts[school]}
-                active={selectedSchool === school}
-                onClick={() => setSelectedSchool(selectedSchool === school ? null : school)}
-              />
-            ))}
-          </SidebarCard>
+          {/* School community */}
+          {loading ? (
+            <SchoolCommunitySkeleton />
+          ) : (
+            <SchoolCommunityModule schools={schools} postCounts={postCountsBySchool} />
+          )}
 
           {/* Content type filter */}
-          <SidebarCard>
-            <SidebarSectionTitle>内容类型</SidebarSectionTitle>
-            <FilterRow
-              label="全部"
-              count={totalCount}
-              active={selectedType === null}
-              onClick={() => setSelectedType(null)}
-              variant="crimson"
-            />
-            {sidebarTypes.map(type => (
-              <FilterRow
-                key={type}
-                label={type}
-                count={typeCounts[type] ?? 0}
-                active={selectedType === type}
-                onClick={() => setSelectedType(selectedType === type ? null : type)}
-                variant="crimson"
-              />
-            ))}
-          </SidebarCard>
+          <ContentTypeFilter
+            types={sidebarTypes}
+            counts={typeCounts}
+            selected={selectedType}
+            onSelect={setSelectedType}
+            totalCount={totalCount}
+            variant="crimson"
+          />
 
         </div>
       </div>
+    </div>
+  )
+}
+
+/* ─── Skeletons ─── */
+
+const skeletonBlock = (w: number | string, h: number, extra: CSSProperties = {}): CSSProperties => ({
+  width: w,
+  height: h,
+  backgroundColor: '#EEF0F4',
+  borderRadius: 4,
+  ...extra,
+})
+
+function PostCardSkeleton() {
+  return (
+    <div
+      className="animate-pulse"
+      style={{
+        backgroundColor: '#FFFFFF',
+        border: '1px solid #ECEEF2',
+        borderRadius: 10,
+        padding: '18px 20px',
+        marginBottom: 12,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+        <div style={{ width: 40, height: 40, borderRadius: '50%', backgroundColor: '#EEF0F4', flexShrink: 0, marginTop: 4 }} />
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 7 }}>
+            <div style={skeletonBlock(44, 14, { borderRadius: 6 })} />
+            <div style={skeletonBlock(56, 14, { borderRadius: 6 })} />
+          </div>
+          <div style={skeletonBlock('80%', 14)} />
+          <div style={skeletonBlock('95%', 10)} />
+          <div style={skeletonBlock('70%', 10)} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+            <div style={skeletonBlock(120, 10)} />
+            <div style={skeletonBlock(40, 10)} />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SchoolCommunitySkeleton() {
+  return (
+    <div
+      className="animate-pulse"
+      style={{ border: '1px solid #ECEEF2', borderRadius: 10, overflow: 'hidden' }}
+    >
+      <div style={{ padding: '12px 14px 10px', borderBottom: '1px solid #ECEEF2' }}>
+        <div style={skeletonBlock(64, 10)} />
+      </div>
+      {[0, 1, 2, 3].map(i => (
+        <div
+          key={i}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 14px',
+            borderBottom: i < 3 ? '1px solid #ECEEF2' : 'none',
+          }}
+        >
+          <div style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: '#EEF0F4', flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={skeletonBlock('70%', 10)} />
+            <div style={skeletonBlock('40%', 8)} />
+          </div>
+          <div style={{ display: 'flex', flexShrink: 0 }}>
+            {[0, 1].map(j => (
+              <div
+                key={j}
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: '50%',
+                  backgroundColor: '#EEF0F4',
+                  border: '2px solid #FFFFFF',
+                  marginLeft: j > 0 ? -10 : 0,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

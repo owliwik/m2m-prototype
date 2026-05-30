@@ -147,6 +147,32 @@ export const ambassadors: Ambassador[] = [
     ],
   },
   {
+    id: 'huang-yiran',
+    name: '黄怡然',
+    school: 'Penn',
+    dept: '生物工程',
+    year: '2024届',
+    bio: 'Penn工程学院申请和跨学科研究方向',
+    postCount: 3,
+    contents: [
+      { type: '文章', title: '在Penn做BE：工程加生医的真实日常' },
+      { type: 'Tips', title: '理工科申请文书别只写竞赛奖项' },
+    ],
+  },
+  {
+    id: 'sun-jiayi',
+    name: '孙佳怡',
+    school: 'Penn',
+    dept: '英语文学 + 哲学',
+    year: '2023届',
+    bio: '文社科双专业，聊申请文书的"声音"和Penn人文圈',
+    postCount: 2,
+    contents: [
+      { type: '随笔', title: '在Penn读两个文科专业是什么体验' },
+      { type: '问答', title: '文社科申请怎么避免变成"模板生"' },
+    ],
+  },
+  {
     id: 'wang-zixuan',
     name: '王子轩',
     school: 'Cornell',
@@ -437,6 +463,15 @@ export const allFeedItems: FeedItem[] = [
   if (!aPinned && bPinned) return 1
   return a.daysAgo - b.daysAgo
 })
+
+export const schoolInfo: Record<SchoolKey, { zh: string; en: string; desc: string }> = {
+  CMU:      { zh: '卡内基梅隆大学', en: 'Carnegie Mellon University',    desc: '位于宾夕法尼亚州匹兹堡，以计算机与工程学科见长'   },
+  Duke:     { zh: '杜克大学',       en: 'Duke University',               desc: '位于北卡罗来纳州达勒姆，以跨学科教育著称'         },
+  Penn:     { zh: '宾夕法尼亚大学', en: 'University of Pennsylvania',    desc: '位于宾夕法尼亚州费城，沃顿商学院所在地'           },
+  Cornell:  { zh: '康奈尔大学',     en: 'Cornell University',            desc: '位于纽约州伊萨卡，常青藤中规模最大、学科最全'     },
+  NYU:      { zh: '纽约大学',       en: 'New York University',           desc: '位于纽约市中心，以艺术、电影与金融学科闻名'       },
+  Columbia: { zh: '哥伦比亚大学',   en: 'Columbia University in the City of New York', desc: '位于纽约曼哈顿，常青藤中历史最悠久的成员之一' },
+}
 
 export const allSchools: SchoolKey[] = ['CMU', 'Duke', 'Penn', 'Cornell', 'NYU', 'Columbia']
 

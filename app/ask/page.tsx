@@ -1,148 +1,218 @@
 'use client'
 
-import { useState } from 'react'
-import { ambassadors, schoolColors, type Ambassador, type SchoolKey } from '../data'
+import { useState, useEffect, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { supabase } from '@/app/lib/supabase'
+import { useRequireAuth } from '@/app/lib/auth'
+import type { Database } from '@/app/lib/database.types'
 
-type CommPref = '文字回复' | '视频通话' | '电话'
+type SchoolRow = Database['public']['Tables']['schools']['Row']
+type AmbassadorRow = Database['public']['Tables']['ambassadors']['Row']
+type UserRow = Database['public']['Tables']['users']['Row']
+type AmbassadorWithRels = AmbassadorRow & { user: UserRow; school: SchoolRow }
+
+type CommPref = '文字回复' | '视频或电话' | '微信'
 type Duration = '15分钟' | '30分钟' | '不确定'
+type Visibility = 'public' | 'private'
+type Identity = 'anonymous' | 'real'
 
-const commPrefs: CommPref[] = ['文字回复', '视频通话', '电话']
+const commPrefs: CommPref[] = ['文字回复', '视频或电话', '微信']
 const durations: Duration[] = ['15分钟', '30分钟', '不确定']
+const needsDuration = (c: CommPref) => c !== '文字回复'
 
-const defaultAmbassador = ambassadors[0]
-
-const schoolInfo: Record<SchoolKey, { zh: string; en: string; desc: string }> = {
-  CMU:      { zh: '卡内基梅隆大学', en: 'Carnegie Mellon University',    desc: '宾夕法尼亚州匹兹堡 · 私立研究型大学' },
-  Duke:     { zh: '杜克大学',       en: 'Duke University',               desc: '北卡罗来纳州达勒姆 · 私立研究型大学' },
-  Penn:     { zh: '宾夕法尼亚大学', en: 'University of Pennsylvania',    desc: '宾夕法尼亚州费城 · 私立常青藤大学'   },
-  Cornell:  { zh: '康奈尔大学',     en: 'Cornell University',            desc: '纽约州伊萨卡 · 私立常青藤大学'       },
-  NYU:      { zh: '纽约大学',       en: 'New York University',           desc: '纽约州纽约市 · 私立研究型大学'       },
-  Columbia: { zh: '哥伦比亚大学',   en: 'Columbia University in the City of New York', desc: '纽约州纽约市 · 私立常青藤大学' },
+function schoolColor(s: Pick<SchoolRow, 'color_bg' | 'color_fg'> | null | undefined) {
+  return {
+    bg: s?.color_bg ?? '#EEF0F4',
+    fg: s?.color_fg ?? '#4A4F5A',
+  }
 }
 
-const schoolOrder: SchoolKey[] = ['CMU', 'Duke', 'Penn', 'Cornell', 'NYU', 'Columbia']
-
 export default function AskPage() {
+  return (
+    <Suspense>
+      <AskPageInner />
+    </Suspense>
+  )
+}
+
+function AskPageInner() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  // Auth gate
+  const { user, ready: authReady } = useRequireAuth()
+  const userId = user?.id ?? null
+
   const [step, setStep] = useState(1)
   const [done, setDone] = useState(false)
 
-  // Step 1
-  const [selectedSchool, setSelectedSchool] = useState(defaultAmbassador.school)
-  const [selectedAmbassador, setSelectedAmbassador] = useState<Ambassador>(defaultAmbassador)
+  // Data
+  const [schools, setSchools] = useState<SchoolRow[]>([])
+  const [ambassadors, setAmbassadors] = useState<AmbassadorWithRels[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  // Step 2
+  // Submission
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  // Step 1: question
   const [question, setQuestion] = useState('')
+  const [visibility, setVisibility] = useState<Visibility>('public')
+  const [identity, setIdentity] = useState<Identity>('anonymous')
+
+  // Step 2: target — selectedSchool holds a DB school id
+  const [selectedSchool, setSelectedSchool] = useState<string | null>(null)
+  const [selectedAmbassadors, setSelectedAmbassadors] = useState<Set<string>>(new Set())
+
+  // Step 3: communication
   const [commPref, setCommPref] = useState<CommPref>('文字回复')
   const [duration, setDuration] = useState<Duration>('30分钟')
 
-  const [schoolIndex, setSchoolIndex] = useState(0)
-  const filteredAmbassadors = ambassadors.filter(a => a.school === selectedSchool)
+  // Load schools + ambassadors
+  useEffect(() => {
+    if (!authReady) return
+    let cancelled = false
+    async function load() {
+      const [schoolsRes, ambsRes] = await Promise.all([
+        supabase.from('schools').select('*').order('name_zh'),
+        supabase
+          .from('ambassadors')
+          .select('*, user:users!ambassadors_id_fkey(*), school:schools(*)'),
+      ])
+      if (cancelled) return
+      if (schoolsRes.error || ambsRes.error) {
+        setLoadError(schoolsRes.error?.message ?? ambsRes.error?.message ?? '加载失败')
+        setLoading(false)
+        return
+      }
+      setSchools((schoolsRes.data as unknown as SchoolRow[] | null) ?? [])
+      setAmbassadors((ambsRes.data as unknown as AmbassadorWithRels[] | null) ?? [])
+      setLoading(false)
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [authReady])
 
-  // Auth modal
-  const [showLoginModal, setShowLoginModal] = useState(false)
-  const [loginTab, setLoginTab] = useState<'login' | 'register'>('login')
-  const [loginEmail, setLoginEmail] = useState('')
-  const [loginPassword, setLoginPassword] = useState('')
-  const [regEmail, setRegEmail] = useState('')
-  const [regCodeSent, setRegCodeSent] = useState(false)
-  const [regCode, setRegCode] = useState('')
+  // Pre-fill from URL params once data is loaded.
+  // Intentionally sets state in an effect because the URL params must be
+  // matched against async-fetched ambassadors/schools.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (loading) return
+    const schoolParam = searchParams.get('school')
+    const ambParam = searchParams.get('ambassador')
+    if (ambParam) {
+      const found = ambassadors.find(a => a.id === ambParam)
+      if (found) {
+        setSelectedSchool(found.school_id)
+        setSelectedAmbassadors(new Set([found.id]))
+        return
+      }
+    }
+    if (schoolParam) {
+      const found = schools.find(s => s.id.toLowerCase() === schoolParam.toLowerCase())
+      if (found) setSelectedSchool(found.id)
+    }
+  }, [loading, searchParams, ambassadors, schools])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
-  function cycleSchool() {
-    const nextIndex = (schoolIndex + 1) % schoolOrder.length
-    const nextSchool = schoolOrder[nextIndex]
-    setSchoolIndex(nextIndex)
-    setSelectedSchool(nextSchool)
-    const first = ambassadors.find(a => a.school === nextSchool)
-    if (first) setSelectedAmbassador(first)
+  const selectedSchoolObj = selectedSchool
+    ? schools.find(s => s.id === selectedSchool) ?? null
+    : null
+
+  const filteredAmbassadors = selectedSchool
+    ? ambassadors.filter(a => a.school_id === selectedSchool)
+    : []
+
+  const questionValid = question.length >= 30
+  const step2Valid = selectedSchool !== null && selectedAmbassadors.size > 0
+
+  const selectedAmbNames = ambassadors
+    .filter(a => selectedAmbassadors.has(a.id))
+    .map(a => a.user.name)
+
+  function toggleAmbassador(id: string) {
+    setSelectedAmbassadors(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
-  const questionValid = question.length >= 50
+  async function handleSubmit() {
+    if (submitting) return
+    if (!selectedSchool || selectedAmbassadors.size === 0) return
+    if (!userId) {
+      const search = typeof window !== 'undefined' ? window.location.search : ''
+      router.push(`/login?redirect=${encodeURIComponent('/ask' + search)}`)
+      return
+    }
+    setSubmitting(true)
+    setSubmitError(null)
 
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) {
+      setSubmitting(false)
+      setSubmitError('会话已过期，请重新登录')
+      return
+    }
+
+    const ambassadorIds = Array.from(selectedAmbassadors)
+    const res = await fetch('/api/requests', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        school_id: selectedSchool,
+        question,
+        comm_pref: commPref,
+        duration: needsDuration(commPref) ? duration : null,
+        ambassador_ids: ambassadorIds,
+        is_anonymous: identity === 'anonymous',
+        visibility,
+      }),
+    })
+
+    const payload = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      setSubmitting(false)
+      setSubmitError(payload?.error ?? '提交失败，请稍后重试')
+      return
+    }
+
+    setSubmitting(false)
+    setDone(true)
+  }
+
+  // ─── Done screen ───
   if (done) {
     return (
-      <div
-        style={{
-          backgroundColor: '#FFFFFF',
-          minHeight: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '40px 24px',
-        }}
-      >
+      <div style={{ backgroundColor: '#FFFFFF', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 24px' }}>
         <div style={{ textAlign: 'center', maxWidth: 480 }}>
-          {/* Green checkmark SVG */}
           <div style={{ marginBottom: 32 }}>
-            <svg
-              width="72"
-              height="72"
-              viewBox="0 0 72 72"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              style={{ margin: '0 auto', display: 'block' }}
-            >
+            <svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ margin: '0 auto', display: 'block' }}>
               <circle cx="36" cy="36" r="35" stroke="#15803D" strokeWidth="2" fill="#F0FDF4" />
-              <path
-                d="M22 36L31 45L50 27"
-                stroke="#15803D"
-                strokeWidth="2.5"
-                strokeLinecap="square"
-                strokeLinejoin="miter"
-              />
+              <path d="M22 36L31 45L50 27" stroke="#15803D" strokeWidth="2.5" strokeLinecap="square" strokeLinejoin="miter" />
             </svg>
           </div>
-          <h1
-            style={{
-              fontFamily: 'var(--font-noto-serif), serif',
-              fontSize: 28,
-              fontWeight: 700,
-              color: '#0D0D0D',
-              marginBottom: 16,
-              letterSpacing: '-0.01em',
-            }}
-          >
+          <h1 style={{ fontFamily: 'var(--font-noto-serif), serif', fontSize: 28, fontWeight: 700, color: '#0D0D0D', marginBottom: 16, letterSpacing: '-0.01em' }}>
             收到了
           </h1>
-          <p
-            style={{
-              fontSize: 15,
-              lineHeight: 1.8,
-              color: '#4A4F5A',
-              fontFamily: 'var(--font-noto-sans), sans-serif',
-              marginBottom: 32,
-            }}
-          >
-            已经收到了。我们会看一遍，然后帮你联系 {selectedAmbassador.name} 安排时间。留意你的邮箱。
+          <p style={{ fontSize: 15, lineHeight: 1.8, color: '#4A4F5A', fontFamily: 'var(--font-noto-sans), sans-serif', marginBottom: 32 }}>
+            收到了。我们会先看一遍，确认后转给 {selectedAmbNames.join('、')}。结果会发到你的邮箱。
           </p>
           <button
-            onClick={() => {
-              setDone(false)
-              setStep(1)
-              setQuestion('')
-            }}
-            style={{
-              border: '1px solid #1F4388',
-              color: '#1F4388',
-              padding: '10px 24px',
-              borderRadius: 8,
-              fontSize: 14,
-              fontWeight: 500,
-              cursor: 'pointer',
-              backgroundColor: 'transparent',
-              letterSpacing: '0.02em',
-              fontFamily: 'var(--font-noto-sans), sans-serif',
-              transition: 'background-color 150ms, color 150ms',
-            }}
-            onMouseEnter={e => {
-              const el = e.currentTarget as HTMLButtonElement
-              el.style.backgroundColor = '#1F4388'
-              el.style.color = '#FFFFFF'
-            }}
-            onMouseLeave={e => {
-              const el = e.currentTarget as HTMLButtonElement
-              el.style.backgroundColor = 'transparent'
-              el.style.color = '#1F4388'
-            }}
+            onClick={() => { setDone(false); setStep(1); setQuestion(''); setSelectedAmbassadors(new Set()) }}
+            style={{ border: '1px solid #1F4388', color: '#1F4388', padding: '10px 24px', borderRadius: 8, fontSize: 14, fontWeight: 500, cursor: 'pointer', backgroundColor: 'transparent', letterSpacing: '0.02em', fontFamily: 'var(--font-noto-sans), sans-serif', transition: 'background-color 150ms, color 150ms' }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = '#1F4388'; e.currentTarget.style.color = '#FFFFFF' }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#1F4388' }}
           >
             再提交一个问题
           </button>
@@ -151,952 +221,533 @@ export default function AskPage() {
     )
   }
 
+  // ─── Loading / error ───
+  if (loading || !authReady) {
+    return (
+      <div style={{ backgroundColor: '#FFFFFF', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 24px' }}>
+        <div style={{ fontSize: 13, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif', letterSpacing: '0.04em' }}>
+          加载中…
+        </div>
+      </div>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <div style={{ backgroundColor: '#FFFFFF', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 24px' }}>
+        <div style={{ textAlign: 'center', maxWidth: 400 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: '#7A2020', fontFamily: 'var(--font-noto-sans), sans-serif', marginBottom: 8 }}>
+            加载失败
+          </div>
+          <div style={{ fontSize: 13, color: '#8C3A3A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+            {loadError}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ─── Main form ───
   return (
     <div style={{ backgroundColor: '#FFFFFF', minHeight: '100vh' }}>
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '56px 24px 80px' }}>
+      <div style={{ maxWidth: 640, margin: '0 auto', padding: '56px 24px 80px' }}>
+
         {/* Step indicator */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'center',
-            marginBottom: 48,
-          }}
-        >
-          {(['选择对象', '写问题', '提交'] as const).map((label, i) => {
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', marginBottom: 48 }}>
+          {(['你想问什么', '你在问谁', '怎么沟通'] as const).map((label, i) => {
             const s = i + 1
             const isActive = step === s
             const isDone = step > s
             const isPending = step < s
             return (
               <div key={s} style={{ display: 'flex', alignItems: 'flex-start' }}>
-                {/* Step column */}
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 72 }}>
-                  <div
-                    style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: '50%',
-                      border: '2px solid',
-                      borderColor: isPending ? '#E2E5EA' : '#1F4388',
-                      backgroundColor: isDone ? '#1F4388' : isActive ? '#FFFFFF' : '#EEF0F4',
-                      color: isDone ? '#FFFFFF' : isActive ? '#1F4388' : '#B0B5C0',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 13,
-                      fontWeight: 700,
-                      fontFamily: 'var(--font-noto-serif), serif',
-                      transition: 'all 200ms',
-                      flexShrink: 0,
-                    }}
-                  >
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 80 }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: '50%', border: '2px solid',
+                    borderColor: isPending ? '#E2E5EA' : '#1F4388',
+                    backgroundColor: isDone ? '#1F4388' : isActive ? '#FFFFFF' : '#EEF0F4',
+                    color: isDone ? '#FFFFFF' : isActive ? '#1F4388' : '#B0B5C0',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, fontWeight: 700, fontFamily: 'var(--font-noto-serif), serif',
+                    transition: 'all 200ms', flexShrink: 0,
+                  }}>
                     {isDone ? (
                       <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
                         <path d="M2 6.5L5 9.5L11 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     ) : s}
                   </div>
-                  <span
-                    style={{
-                      marginTop: 8,
-                      fontSize: 11,
-                      fontFamily: 'var(--font-noto-sans), sans-serif',
-                      letterSpacing: '0.04em',
-                      color: isActive ? '#1F4388' : isDone ? '#4A4F5A' : '#B0B5C0',
-                      fontWeight: isActive ? 600 : 400,
-                      textAlign: 'center',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
+                  <span style={{
+                    marginTop: 8, fontSize: 11, fontFamily: 'var(--font-noto-sans), sans-serif',
+                    letterSpacing: '0.04em', textAlign: 'center', whiteSpace: 'nowrap',
+                    color: isActive ? '#1F4388' : isDone ? '#4A4F5A' : '#B0B5C0',
+                    fontWeight: isActive ? 600 : 400,
+                  }}>
                     {label}
                   </span>
                 </div>
-                {/* Connector line — vertically centered to circle */}
                 {i < 2 && (
-                  <div
-                    style={{
-                      width: 48,
-                      height: 2,
-                      marginTop: 15,
-                      backgroundColor: step > s ? '#1F4388' : '#E2E5EA',
-                      transition: 'background-color 200ms',
-                      flexShrink: 0,
-                    }}
-                  />
+                  <div style={{ width: 48, height: 2, marginTop: 15, backgroundColor: step > s ? '#1F4388' : '#E2E5EA', transition: 'background-color 200ms', flexShrink: 0 }} />
                 )}
               </div>
             )
           })}
         </div>
 
-        {/* STEP 1 */}
+        {/* ═══ STEP 1: 你想问什么 ═══ */}
         {step === 1 && (
           <div key="step-1" className="step-enter">
-            <h2
-              style={{
-                fontFamily: 'var(--font-noto-serif), serif',
-                fontSize: 26,
-                fontWeight: 700,
-                color: '#0D0D0D',
-                marginBottom: 8,
-                letterSpacing: '-0.01em',
-              }}
-            >
-              你想和谁聊？
+            <h2 style={{ fontFamily: 'var(--font-noto-serif), serif', fontSize: 26, fontWeight: 700, color: '#0D0D0D', marginBottom: 8, letterSpacing: '-0.01em' }}>
+              你想问什么？
             </h2>
-            <p
-              style={{
-                fontSize: 14,
-                color: '#8A8F9A',
-                marginBottom: 32,
-                fontFamily: 'var(--font-noto-sans), sans-serif',
-                lineHeight: 1.6,
-              }}
-            >
-              选一所你关注的学校，再选一位你想聊的大使。
+            <p style={{ fontSize: 14, color: '#8A8F9A', marginBottom: 32, fontFamily: 'var(--font-noto-sans), sans-serif', lineHeight: 1.6 }}>
+              把你的问题写清楚，大使才能给出有针对性的回答。
             </p>
 
-            {/* School card */}
-            {(() => {
-              const sc = schoolColors[selectedSchool]
-              const info = schoolInfo[selectedSchool]
-              return (
-                <div
-                  style={{
-                    backgroundColor: '#F7F8FA',
-                    border: '1px solid #E2E5EA',
-                    borderRadius: 10,
-                    marginBottom: 16,
-                    overflow: 'hidden',
-                  }}
-                >
-                  {/* Label */}
-                  <div style={{ padding: '14px 20px 0' }}>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: '#8A8F9A',
-                        letterSpacing: '0.1em',
-                        textTransform: 'uppercase',
-                        fontFamily: 'var(--font-noto-sans), sans-serif',
-                      }}
-                    >
-                      目标院校
-                    </span>
-                  </div>
+            {/* Question textarea */}
+            <div style={{ marginBottom: 28 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#0D0D0D', marginBottom: 8, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                问题描述 <span style={{ color: '#A83131' }}>*</span>
+              </label>
+              <textarea
+                value={question}
+                onChange={e => setQuestion(e.target.value)}
+                placeholder="例如：CMU SCS的申请文书应该侧重技术经历还是个人故事？"
+                rows={5}
+                style={{
+                  width: '100%', boxSizing: 'border-box', padding: '12px 14px',
+                  border: '1px solid #E2E5EA', borderRadius: 8, fontSize: 14, lineHeight: 1.7,
+                  fontFamily: 'var(--font-noto-sans), sans-serif', color: '#0D0D0D',
+                  resize: 'vertical', outline: 'none', transition: 'border-color 150ms',
+                  backgroundColor: '#FAFBFC',
+                }}
+                onFocus={e => (e.currentTarget.style.borderColor = '#C8CDD6')}
+                onBlur={e => (e.currentTarget.style.borderColor = '#E2E5EA')}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+                <span style={{
+                  fontSize: 12, fontFamily: 'var(--font-noto-sans), sans-serif',
+                  color: question.length >= 30 ? '#1F4388' : '#B0B5C0',
+                  fontWeight: question.length >= 30 ? 500 : 400,
+                  transition: 'color 200ms',
+                }}>
+                  {question.length} / 30
+                </span>
+              </div>
+            </div>
 
-                  {/* Content row */}
-                  <div style={{ display: 'flex', gap: 16, alignItems: 'center', padding: '14px 20px' }}>
-                    {/* Square logo */}
-                    <div
-                      style={{
-                        width: 52,
-                        height: 52,
-                        borderRadius: 10,
-                        backgroundColor: sc.bg,
-                        color: sc.fg,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: 22,
-                        fontWeight: 700,
-                        fontFamily: 'var(--font-noto-serif), serif',
-                        flexShrink: 0,
-                        border: `1px solid ${sc.fg}22`,
-                      }}
-                    >
-                      {selectedSchool.slice(0, 1)}
-                    </div>
+            {/* Visibility */}
+            <div style={{ marginBottom: 24 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#0D0D0D', marginBottom: 10, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                公开设置
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <RadioOption
+                  selected={visibility === 'public'}
+                  onClick={() => setVisibility('public')}
+                  label="公开提问"
+                  desc="所有登录用户可见，帮助更多同学"
+                />
+                <RadioOption
+                  selected={visibility === 'private'}
+                  onClick={() => setVisibility('private')}
+                  label="私下提问"
+                  desc="仅大使可见"
+                />
+              </div>
+            </div>
 
-                    {/* Info */}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 17,
-                          fontWeight: 500,
-                          color: '#0D0D0D',
-                          fontFamily: 'var(--font-noto-serif), serif',
-                          marginBottom: 3,
-                        }}
-                      >
-                        {info.zh}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: '#8A8F9A',
-                          fontFamily: 'var(--font-noto-sans), sans-serif',
-                          marginBottom: 3,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {info.en}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: '#B0B5C0',
-                          fontFamily: 'var(--font-noto-sans), sans-serif',
-                        }}
-                      >
-                        {info.desc}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Footer */}
-                  <div
-                    style={{
-                      borderTop: '1px solid #E2E5EA',
-                      padding: '10px 20px',
-                      display: 'flex',
-                      justifyContent: 'flex-end',
-                    }}
-                  >
-                    <button
-                      onClick={cycleSchool}
-                      style={{
-                        fontSize: 13,
-                        color: '#A83131',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontFamily: 'var(--font-noto-sans), sans-serif',
-                        textDecoration: 'underline',
-                        textUnderlineOffset: 3,
-                        padding: 0,
-                        transition: 'color 150ms',
-                      }}
-                      onMouseEnter={e => (e.currentTarget.style.color = '#7A1F1F')}
-                      onMouseLeave={e => (e.currentTarget.style.color = '#A83131')}
-                    >
-                      换一所院校
-                    </button>
-                  </div>
+            {/* Identity (only when public) */}
+            {visibility === 'public' && (
+              <div style={{ marginBottom: 32 }}>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#0D0D0D', marginBottom: 10, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                  署名方式
+                </label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <PillOption selected={identity === 'anonymous'} onClick={() => setIdentity('anonymous')} label="匿名" />
+                  <PillOption selected={identity === 'real'} onClick={() => setIdentity('real')} label="实名" />
                 </div>
-              )
-            })()}
+              </div>
+            )}
 
-            {/* Ambassador card */}
-            {(() => {
-              const amb = selectedAmbassador
-              const sc = schoolColors[amb.school]
-              function cycleAmbassador() {
-                const idx = filteredAmbassadors.findIndex(a => a.id === amb.id)
-                const next = filteredAmbassadors[(idx + 1) % filteredAmbassadors.length]
-                setSelectedAmbassador(next)
-              }
-              return (
-                <div
-                  style={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E5EA',
-                    borderRadius: 10,
-                    marginBottom: 40,
-                    overflow: 'hidden',
-                  }}
-                >
-                  {/* Label */}
-                  <div style={{ padding: '14px 20px 0' }}>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: '#8A8F9A',
-                        letterSpacing: '0.1em',
-                        textTransform: 'uppercase',
-                        fontFamily: 'var(--font-noto-sans), sans-serif',
-                      }}
-                    >
-                      大使
-                    </span>
-                  </div>
-
-                  {/* Content row */}
-                  <div style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '14px 20px' }}>
-                    {/* Circular avatar */}
-                    <div
-                      style={{
-                        width: 44,
-                        height: 44,
-                        borderRadius: '50%',
-                        backgroundColor: sc.bg,
-                        color: sc.fg,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: 18,
-                        fontWeight: 700,
-                        fontFamily: 'var(--font-noto-sans), sans-serif',
-                        flexShrink: 0,
-                      }}
-                    >
-                      {amb.name.slice(0, 1)}
-                    </div>
-
-                    {/* Info */}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-                        <span
-                          style={{
-                            fontSize: 15,
-                            fontWeight: 500,
-                            color: '#0D0D0D',
-                            fontFamily: 'var(--font-noto-serif), serif',
-                          }}
-                        >
-                          {amb.name}
-                        </span>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            fontWeight: 600,
-                            backgroundColor: sc.bg,
-                            color: sc.fg,
-                            padding: '1px 7px',
-                            borderRadius: 6,
-                            letterSpacing: '0.04em',
-                            fontFamily: 'var(--font-noto-sans), sans-serif',
-                          }}
-                        >
-                          {amb.school}
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: '#8A8F9A',
-                          fontFamily: 'var(--font-noto-sans), sans-serif',
-                          marginBottom: 4,
-                        }}
-                      >
-                        {amb.dept} · {amb.year}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: '#4A4F5A',
-                          fontFamily: 'var(--font-noto-sans), sans-serif',
-                        }}
-                      >
-                        {amb.bio}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Footer */}
-                  <div
-                    style={{
-                      borderTop: '1px solid #E2E5EA',
-                      padding: '10px 20px',
-                      display: 'flex',
-                      justifyContent: 'flex-end',
-                    }}
-                  >
-                    <button
-                      onClick={cycleAmbassador}
-                      style={{
-                        fontSize: 13,
-                        color: '#A83131',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontFamily: 'var(--font-noto-sans), sans-serif',
-                        textDecoration: 'underline',
-                        textUnderlineOffset: 3,
-                        padding: 0,
-                        transition: 'color 150ms',
-                      }}
-                      onMouseEnter={e => (e.currentTarget.style.color = '#7A1F1F')}
-                      onMouseLeave={e => (e.currentTarget.style.color = '#A83131')}
-                    >
-                      换一位大使
-                    </button>
-                  </div>
-                </div>
-              )
-            })()}
-
+            {/* Next */}
             <button
+              disabled={!questionValid}
               onClick={() => setStep(2)}
               style={{
-                width: '100%',
-                backgroundColor: '#1F4388',
-                color: '#FFFFFF',
-                padding: '14px',
-                borderRadius: 8,
-                fontSize: 15,
-                fontWeight: 500,
-                border: 'none',
-                cursor: 'pointer',
-                letterSpacing: '0.02em',
-                fontFamily: 'var(--font-noto-sans), sans-serif',
+                width: '100%', padding: '12px', borderRadius: 8, border: 'none',
+                fontSize: 14, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif',
+                cursor: questionValid ? 'pointer' : 'default',
+                backgroundColor: questionValid ? '#1F4388' : '#EEF0F4',
+                color: questionValid ? '#FFFFFF' : '#B0B5C0',
                 transition: 'background-color 150ms',
+                letterSpacing: '0.02em',
               }}
-              onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#183272')}
-              onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#1F4388')}
+              onMouseEnter={e => { if (questionValid) e.currentTarget.style.backgroundColor = '#183272' }}
+              onMouseLeave={e => { if (questionValid) e.currentTarget.style.backgroundColor = '#1F4388' }}
             >
-              下一步：写下你的问题
+              下一步
             </button>
           </div>
         )}
 
-        {/* STEP 2 */}
+        {/* ═══ STEP 2: 你在问谁 ═══ */}
         {step === 2 && (
           <div key="step-2" className="step-enter">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <h2 style={{ fontFamily: 'var(--font-noto-serif), serif', fontSize: 26, fontWeight: 700, color: '#0D0D0D', marginBottom: 8, letterSpacing: '-0.01em' }}>
+              你在问谁？
+            </h2>
+
+            {/* School identity badge or select fallback */}
+            {selectedSchoolObj ? (
+              <div style={{ marginBottom: 28 }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 16,
+                  backgroundColor: schoolColor(selectedSchoolObj).bg,
+                  borderRadius: 10, padding: '18px 20px',
+                }}>
+                  <div style={{
+                    width: 52, height: 52, borderRadius: 10, flexShrink: 0,
+                    backgroundColor: schoolColor(selectedSchoolObj).fg,
+                    color: '#FFFFFF',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: 'var(--font-noto-serif), serif',
+                    fontSize: 24, fontWeight: 700,
+                  }}>
+                    {selectedSchoolObj.name_zh[0]}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 17, fontWeight: 500, color: '#0D0D0D', fontFamily: 'var(--font-noto-sans), sans-serif', lineHeight: 1.3, marginBottom: 3 }}>
+                      {selectedSchoolObj.name_zh}
+                    </div>
+                    <div style={{ fontSize: 13, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                      {selectedSchoolObj.name_en}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p style={{ fontSize: 14, color: '#8A8F9A', marginBottom: 24, fontFamily: 'var(--font-noto-sans), sans-serif', lineHeight: 1.6 }}>
+                  选一所学校，再选择你想咨询的大使。
+                </p>
+                <div style={{ marginBottom: 24 }}>
+                  <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#0D0D0D', marginBottom: 8, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                    目标院校 <span style={{ color: '#A83131' }}>*</span>
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <select
+                      value={selectedSchool ?? ''}
+                      onChange={e => {
+                        const val = e.target.value
+                        setSelectedSchool(val || null)
+                        setSelectedAmbassadors(new Set())
+                      }}
+                      style={{
+                        width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #E2E5EA',
+                        fontSize: 14, fontFamily: 'var(--font-noto-sans), sans-serif', color: '#B0B5C0',
+                        backgroundColor: '#FAFBFC', outline: 'none', appearance: 'none',
+                        backgroundImage: `url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238A8F9A' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+                        backgroundRepeat: 'no-repeat',
+                        backgroundPosition: 'right 14px center',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <option value="">选择学校…</option>
+                      {schools.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name_zh}{s.short_name ? `（${s.short_name}）` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Ambassador list */}
+            {selectedSchool && (
+              <div style={{ marginBottom: 32 }}>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#0D0D0D', marginBottom: 10, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                  选择大使 <span style={{ color: '#A83131' }}>*</span>
+                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {filteredAmbassadors.map(amb => {
+                    const isSelected = selectedAmbassadors.has(amb.id)
+                    const sc = schoolColor(amb.school)
+                    const yearLabel = amb.grad_year != null ? `${amb.grad_year}届` : ''
+                    const deptYear = [amb.dept, yearLabel].filter(Boolean).join(' · ')
+                    return (
+                      <div
+                        key={amb.id}
+                        onClick={() => toggleAmbassador(amb.id)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 14,
+                          padding: '14px 16px', borderRadius: 10,
+                          border: `1px solid ${isSelected ? '#1F4388' : '#ECEEF2'}`,
+                          backgroundColor: isSelected ? '#F5F8FD' : '#FFFFFF',
+                          cursor: 'pointer', transition: 'all 150ms',
+                        }}
+                        onMouseEnter={e => { if (!isSelected) e.currentTarget.style.borderColor = '#C8CDD6' }}
+                        onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = '#ECEEF2' }}
+                      >
+                        {/* Checkbox indicator */}
+                        <div style={{
+                          width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+                          border: `2px solid ${isSelected ? '#1F4388' : '#D0D4DC'}`,
+                          backgroundColor: isSelected ? '#1F4388' : '#FFFFFF',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          transition: 'all 150ms',
+                        }}>
+                          {isSelected && (
+                            <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                              <path d="M1 3.5L3.5 6L9 1" stroke="#FFFFFF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          )}
+                        </div>
+                        {/* Avatar */}
+                        <div style={{
+                          width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
+                          backgroundColor: sc.bg, color: sc.fg,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-noto-sans), sans-serif',
+                        }}>
+                          {amb.user.name[0]}
+                        </div>
+                        {/* Info */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 500, color: '#0D0D0D', fontFamily: 'var(--font-noto-sans), sans-serif', marginBottom: 2 }}>
+                            {amb.user.name}
+                            {deptYear && (
+                              <span style={{ fontSize: 12, fontWeight: 400, color: '#8A8F9A', marginLeft: 8 }}>
+                                {deptYear}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#4A4F5A', fontFamily: 'var(--font-noto-sans), sans-serif', lineHeight: 1.5 }}>
+                            {amb.bio ?? ''}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Navigation */}
+            <div style={{ display: 'flex', gap: 12 }}>
               <button
                 onClick={() => setStep(1)}
                 style={{
-                  background: 'none',
-                  border: '1px solid #A83131',
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  color: '#A83131',
-                  fontSize: 13,
-                  fontFamily: 'var(--font-noto-sans), sans-serif',
-                  padding: '6px 14px',
+                  flex: 1, padding: '12px', borderRadius: 8, fontSize: 14, fontWeight: 500,
+                  fontFamily: 'var(--font-noto-sans), sans-serif', cursor: 'pointer',
+                  backgroundColor: 'transparent', color: '#4A4F5A',
+                  border: '1px solid #E2E5EA', transition: 'border-color 150ms',
                 }}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = '#C8CDD6')}
+                onMouseLeave={e => (e.currentTarget.style.borderColor = '#E2E5EA')}
               >
-                ← 返回
+                上一步
+              </button>
+              <button
+                disabled={!step2Valid}
+                onClick={() => setStep(3)}
+                style={{
+                  flex: 2, padding: '12px', borderRadius: 8, border: 'none',
+                  fontSize: 14, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif',
+                  cursor: step2Valid ? 'pointer' : 'default',
+                  backgroundColor: step2Valid ? '#1F4388' : '#EEF0F4',
+                  color: step2Valid ? '#FFFFFF' : '#B0B5C0',
+                  transition: 'background-color 150ms', letterSpacing: '0.02em',
+                }}
+                onMouseEnter={e => { if (step2Valid) e.currentTarget.style.backgroundColor = '#183272' }}
+                onMouseLeave={e => { if (step2Valid) e.currentTarget.style.backgroundColor = '#1F4388' }}
+              >
+                下一步
               </button>
             </div>
-            <h2
-              style={{
-                fontFamily: 'var(--font-noto-serif), serif',
-                fontSize: 26,
-                fontWeight: 700,
-                color: '#0D0D0D',
-                marginBottom: 8,
-                letterSpacing: '-0.01em',
-              }}
-            >
-              你想聊什么？
-            </h2>
-            <p
-              style={{
-                fontSize: 14,
-                color: '#8A8F9A',
-                marginBottom: 32,
-                fontFamily: 'var(--font-noto-sans), sans-serif',
-                lineHeight: 1.6,
-              }}
-            >
-              写给 {selectedAmbassador.name}。说得越具体，对方越能给出真正有用的东西。
-            </p>
-
-            {/* Textarea */}
-            <div style={{ marginBottom: 28 }}>
-              <div style={{ position: 'relative' }}>
-                <textarea
-                  value={question}
-                  onChange={e => setQuestion(e.target.value)}
-                  placeholder="例如：我想申请 CMU SCS，目前有两段科研经历但没有实习，文书应该侧重写什么方向？"
-                  rows={6}
-                  style={{
-                    width: '100%',
-                    padding: '16px',
-                    fontSize: 14,
-                    lineHeight: 1.8,
-                    fontFamily: 'var(--font-noto-sans), sans-serif',
-                    border: '1px solid',
-                    borderRadius: 8,
-                    borderColor: questionValid ? '#15803D' : '#E2E5EA',
-                    backgroundColor: '#FFFFFF',
-                    color: '#0D0D0D',
-                    resize: 'vertical',
-                    outline: 'none',
-                    transition: 'border-color 150ms',
-                  }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    bottom: 12,
-                    right: 14,
-                    fontSize: 11,
-                    color: questionValid ? '#A83131' : '#8A8F9A',
-                    fontFamily: 'var(--font-noto-sans), sans-serif',
-                    transition: 'color 150ms',
-                  }}
-                >
-                  {question.length} / 50+
-                </div>
-              </div>
-              {!questionValid && question.length > 0 && (
-                <p
-                  style={{
-                    fontSize: 12,
-                    color: '#8A8F9A',
-                    marginTop: 6,
-                    fontFamily: 'var(--font-noto-sans), sans-serif',
-                  }}
-                >
-                  请至少输入 50 个字，让大使更好地理解你的问题（还差 {50 - question.length} 个字）
-                </p>
-              )}
-            </div>
-
-            {/* Communication preference */}
-            <div style={{ marginBottom: 24 }}>
-              <p
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: '#0D0D0D',
-                  marginBottom: 12,
-                  letterSpacing: '0.04em',
-                  fontFamily: 'var(--font-noto-sans), sans-serif',
-                }}
-              >
-                回复方式偏好
-              </p>
-              <div style={{ display: 'flex', gap: 8 }}>
-                {commPrefs.map(pref => (
-                  <button
-                    key={pref}
-                    onClick={() => setCommPref(pref)}
-                    style={{
-                      padding: '8px 16px',
-                      fontSize: 13,
-                      fontWeight: 500,
-                      fontFamily: 'var(--font-noto-sans), sans-serif',
-                      border: '1px solid',
-                      borderRadius: 6,
-                      borderColor: commPref === pref ? '#1F4388' : '#E2E5EA',
-                      backgroundColor: commPref === pref ? '#1F4388' : 'transparent',
-                      color: commPref === pref ? '#FFFFFF' : '#4A4F5A',
-                      cursor: 'pointer',
-                      transition: 'all 150ms',
-                    }}
-                  >
-                    {pref}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Duration */}
-            <div style={{ marginBottom: 40 }}>
-              <p
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: '#0D0D0D',
-                  marginBottom: 12,
-                  letterSpacing: '0.04em',
-                  fontFamily: 'var(--font-noto-sans), sans-serif',
-                }}
-              >
-                期望交流时长
-              </p>
-              <div style={{ display: 'flex', gap: 8 }}>
-                {durations.map(d => (
-                  <button
-                    key={d}
-                    onClick={() => setDuration(d)}
-                    style={{
-                      padding: '8px 16px',
-                      fontSize: 13,
-                      fontWeight: 500,
-                      fontFamily: 'var(--font-noto-sans), sans-serif',
-                      border: '1px solid',
-                      borderRadius: 6,
-                      borderColor: duration === d ? '#1F4388' : '#E2E5EA',
-                      backgroundColor: duration === d ? '#1F4388' : 'transparent',
-                      color: duration === d ? '#FFFFFF' : '#4A4F5A',
-                      cursor: 'pointer',
-                      transition: 'all 150ms',
-                    }}
-                  >
-                    {d}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <button
-              onClick={() => { if (questionValid) { setStep(3); setShowLoginModal(true) } }}
-              disabled={!questionValid}
-              style={{
-                width: '100%',
-                backgroundColor: questionValid ? '#1F4388' : '#EEF0F4',
-                color: questionValid ? '#FFFFFF' : '#B0B5C0',
-                padding: '14px',
-                borderRadius: 8,
-                fontSize: 15,
-                fontWeight: 500,
-                border: 'none',
-                cursor: questionValid ? 'pointer' : 'not-allowed',
-                letterSpacing: '0.02em',
-                fontFamily: 'var(--font-noto-sans), sans-serif',
-                transition: 'background-color 150ms',
-              }}
-              onMouseEnter={e => {
-                if (questionValid) e.currentTarget.style.backgroundColor = '#183272'
-              }}
-              onMouseLeave={e => {
-                if (questionValid) e.currentTarget.style.backgroundColor = '#1F4388'
-              }}
-            >
-              下一步：验证邮箱
-            </button>
           </div>
         )}
 
-        {/* STEP 3 — summary, modal handles auth */}
+        {/* ═══ STEP 3: 怎么沟通 ═══ */}
         {step === 3 && (
           <div key="step-3" className="step-enter">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-              <button
-                onClick={() => { setStep(2); setShowLoginModal(false) }}
-                style={{
-                  background: 'none',
-                  border: '1px solid #A83131',
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  color: '#A83131',
-                  fontSize: 13,
-                  fontFamily: 'var(--font-noto-sans), sans-serif',
-                  padding: '6px 14px',
-                }}
-              >
-                ← 返回
-              </button>
-            </div>
-            <h2
-              style={{
-                fontFamily: 'var(--font-noto-serif), serif',
-                fontSize: 26,
-                fontWeight: 700,
-                color: '#0D0D0D',
-                marginBottom: 8,
-                letterSpacing: '-0.01em',
-              }}
-            >
-              确认提交
+            <h2 style={{ fontFamily: 'var(--font-noto-serif), serif', fontSize: 26, fontWeight: 700, color: '#0D0D0D', marginBottom: 8, letterSpacing: '-0.01em' }}>
+              怎么沟通？
             </h2>
-            <p
-              style={{
-                fontSize: 14,
-                color: '#8A8F9A',
-                marginBottom: 32,
-                fontFamily: 'var(--font-noto-sans), sans-serif',
-                lineHeight: 1.6,
-              }}
-            >
-              请确认你的提问内容，然后登录或注册以提交。
+            <p style={{ fontSize: 14, color: '#8A8F9A', marginBottom: 32, fontFamily: 'var(--font-noto-sans), sans-serif', lineHeight: 1.6 }}>
+              选择你偏好的沟通方式，大使会根据情况安排。
             </p>
+
+            {/* Communication preference */}
+            <div style={{ marginBottom: 24 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#0D0D0D', marginBottom: 10, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                偏好沟通方式
+              </label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {commPrefs.map(c => (
+                  <PillOption key={c} selected={commPref === c} onClick={() => setCommPref(c)} label={c} />
+                ))}
+              </div>
+            </div>
+
+            {/* Duration (only for non-text) */}
+            {needsDuration(commPref) && (
+              <div style={{ marginBottom: 32 }}>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#0D0D0D', marginBottom: 10, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
+                  预计时长
+                </label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {durations.map(d => (
+                    <PillOption key={d} selected={duration === d} onClick={() => setDuration(d)} label={d} />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Summary card */}
-            <div
-              style={{
-                backgroundColor: '#F7F8FA',
-                border: '1px solid #E2E5EA',
-                borderRadius: 10,
-                padding: '20px 24px',
-                marginBottom: 24,
-              }}
-            >
-              <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-                {(() => {
-                  const sc = schoolColors[selectedSchool]
-                  return (
-                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                      <div style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: sc.bg, color: sc.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, fontFamily: 'var(--font-noto-sans), sans-serif', flexShrink: 0 }}>
-                        {selectedSchool.slice(0, 1)}
-                      </div>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: '#0D0D0D', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                        {schoolInfo[selectedSchool].zh}
-                      </span>
-                    </div>
-                  )
-                })()}
-                <span style={{ fontSize: 13, color: '#B0B5C0', fontFamily: 'var(--font-noto-sans), sans-serif', marginLeft: 8, display: 'flex', alignItems: 'center' }}>·</span>
-                {(() => {
-                  const sc = schoolColors[selectedAmbassador.school]
-                  return (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <div style={{ width: 24, height: 24, borderRadius: '50%', backgroundColor: sc.bg, color: sc.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-noto-sans), sans-serif', flexShrink: 0 }}>
-                        {selectedAmbassador.name.slice(0, 1)}
-                      </div>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: '#0D0D0D', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                        {selectedAmbassador.name}
-                      </span>
-                    </div>
-                  )
-                })()}
+            <div style={{
+              backgroundColor: '#F7F8FA', border: '1px solid #ECEEF2', borderRadius: 10,
+              padding: '16px 20px', marginBottom: 28,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#B0B5C0', letterSpacing: '0.1em', textTransform: 'uppercase', fontFamily: 'var(--font-noto-sans), sans-serif', marginBottom: 10 }}>
+                提问摘要
               </div>
-              <p style={{ fontSize: 13, color: '#4A4F5A', fontFamily: 'var(--font-noto-sans), sans-serif', lineHeight: 1.7, margin: 0, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                {question || '（问题内容为空）'}
-              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <SummaryRow label="问题" value={question.length > 40 ? question.slice(0, 40) + '…' : question} />
+                <SummaryRow label="大使" value={selectedAmbNames.join('、')} />
+                <SummaryRow label="学校" value={selectedSchoolObj?.name_zh ?? ''} />
+                <SummaryRow label="方式" value={commPref + (needsDuration(commPref) ? ` · ${duration}` : '')} />
+              </div>
             </div>
 
-            {/* Login CTA */}
-            <button
-              onClick={() => setShowLoginModal(true)}
-              style={{
-                width: '100%',
-                backgroundColor: '#1F4388',
-                color: '#FFFFFF',
-                padding: '14px',
-                borderRadius: 8,
-                fontSize: 15,
-                fontWeight: 500,
-                border: 'none',
-                cursor: 'pointer',
-                letterSpacing: '0.02em',
-                fontFamily: 'var(--font-noto-sans), sans-serif',
-                transition: 'background-color 150ms',
-                marginBottom: 12,
-              }}
-              onMouseEnter={e => { e.currentTarget.style.backgroundColor = '#183272' }}
-              onMouseLeave={e => { e.currentTarget.style.backgroundColor = '#1F4388' }}
-            >
-              登录 / 注册以提交问题
-            </button>
+            {/* Error display */}
+            {submitError && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: '12px 16px',
+                  border: '1px solid #E8C8C8',
+                  borderRadius: 8,
+                  backgroundColor: '#FAE8E8',
+                  fontSize: 13,
+                  color: '#7A2020',
+                  fontFamily: 'var(--font-noto-sans), sans-serif',
+                  lineHeight: 1.5,
+                }}
+              >
+                {submitError}
+              </div>
+            )}
 
-            <p
-              style={{
-                fontSize: 11,
-                color: '#8A8F9A',
-                textAlign: 'center',
-                fontFamily: 'var(--font-noto-sans), sans-serif',
-                lineHeight: 1.6,
-              }}
-            >
-              需要四中学校邮箱（@bhsfic.com）验证身份
-            </p>
+            {/* Navigation */}
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button
+                onClick={() => setStep(2)}
+                disabled={submitting}
+                style={{
+                  flex: 1, padding: '12px', borderRadius: 8, fontSize: 14, fontWeight: 500,
+                  fontFamily: 'var(--font-noto-sans), sans-serif',
+                  cursor: submitting ? 'default' : 'pointer',
+                  backgroundColor: 'transparent', color: '#4A4F5A',
+                  border: '1px solid #E2E5EA', transition: 'border-color 150ms',
+                  opacity: submitting ? 0.5 : 1,
+                }}
+                onMouseEnter={e => { if (!submitting) e.currentTarget.style.borderColor = '#C8CDD6' }}
+                onMouseLeave={e => { if (!submitting) e.currentTarget.style.borderColor = '#E2E5EA' }}
+              >
+                上一步
+              </button>
+              <button
+                onClick={handleSubmit}
+                disabled={submitting}
+                style={{
+                  flex: 2, padding: '12px', borderRadius: 8, border: 'none',
+                  fontSize: 14, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif',
+                  cursor: submitting ? 'default' : 'pointer',
+                  backgroundColor: submitting ? '#8A9AC4' : '#1F4388',
+                  color: '#FFFFFF',
+                  transition: 'background-color 150ms', letterSpacing: '0.02em',
+                }}
+                onMouseEnter={e => { if (!submitting) e.currentTarget.style.backgroundColor = '#183272' }}
+                onMouseLeave={e => { if (!submitting) e.currentTarget.style.backgroundColor = '#1F4388' }}
+              >
+                {submitting ? '提交中…' : '提交问题'}
+              </button>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Login / Register Modal */}
-      {showLoginModal && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowLoginModal(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(13,13,13,0.45)',
-            backdropFilter: 'blur(6px)',
-            WebkitBackdropFilter: 'blur(6px)',
-            zIndex: 200,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '24px',
-          }}
-        >
-          <div
-            className="modal-card"
-            onClick={e => e.stopPropagation()}
-            style={{
-              backgroundColor: '#FFFFFF',
-              borderRadius: 12,
-              width: '100%',
-              maxWidth: 380,
-              boxShadow: '0 8px 40px rgba(0,0,0,0.13), 0 1px 3px rgba(0,0,0,0.06)',
-              overflow: 'hidden',
-            }}
-          >
-            {/* Wordmark + close */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '22px 22px 0' }}>
-              <span style={{ fontFamily: 'var(--font-noto-serif), serif', fontWeight: 700, fontSize: 14, color: '#1F4388', letterSpacing: '0.05em' }}>
-                M2M
-              </span>
-              <button
-                onClick={() => setShowLoginModal(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#C8CDD6', fontSize: 20, lineHeight: 1, padding: '2px 4px', display: 'flex', alignItems: 'center', transition: 'color 150ms' }}
-                onMouseEnter={e => (e.currentTarget.style.color = '#4A4F5A')}
-                onMouseLeave={e => (e.currentTarget.style.color = '#C8CDD6')}
-              >
-                ×
-              </button>
-            </div>
+    </div>
+  )
+}
 
-            {/* Animated form area — key triggers re-enter animation on mode switch */}
-            <div
-              key={loginTab}
-              className="step-enter"
-              style={{ padding: '20px 22px 24px' }}
-            >
-              {loginTab === 'login' ? (
-                <>
-                  {/* Login heading */}
-                  <h3 style={{ fontFamily: 'var(--font-noto-serif), serif', fontSize: 18, fontWeight: 700, color: '#0D0D0D', margin: '0 0 4px', letterSpacing: '-0.01em' }}>
-                    登录账号
-                  </h3>
-                  <p style={{ fontSize: 12, color: '#8A8F9A', margin: '0 0 20px', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                    使用四中学生邮箱登录
-                  </p>
+/* ─── Shared components ─── */
 
-                  {/* Email */}
-                  <div style={{ marginBottom: 12 }}>
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#4A4F5A', marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                      学校邮箱
-                    </label>
-                    <input
-                      type="email"
-                      value={loginEmail}
-                      onChange={e => setLoginEmail(e.target.value)}
-                      placeholder="yourname@bhsfic.com"
-                      style={{ width: '100%', padding: '10px 12px', fontSize: 14, fontFamily: 'var(--font-noto-sans), sans-serif', border: '1px solid #E2E5EA', borderRadius: 8, color: '#0D0D0D', outline: 'none', transition: 'border-color 150ms', backgroundColor: '#FFFFFF' }}
-                      onFocus={e => (e.currentTarget.style.borderColor = '#1F4388')}
-                      onBlur={e => (e.currentTarget.style.borderColor = '#E2E5EA')}
-                    />
-                  </div>
-
-                  {/* Password */}
-                  <div style={{ marginBottom: 20 }}>
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#4A4F5A', marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                      密码
-                    </label>
-                    <input
-                      type="password"
-                      value={loginPassword}
-                      onChange={e => setLoginPassword(e.target.value)}
-                      placeholder="输入密码"
-                      style={{ width: '100%', padding: '10px 12px', fontSize: 14, fontFamily: 'var(--font-noto-sans), sans-serif', border: '1px solid #E2E5EA', borderRadius: 8, color: '#0D0D0D', outline: 'none', transition: 'border-color 150ms', backgroundColor: '#FFFFFF' }}
-                      onFocus={e => (e.currentTarget.style.borderColor = '#1F4388')}
-                      onBlur={e => (e.currentTarget.style.borderColor = '#E2E5EA')}
-                    />
-                  </div>
-
-                  {/* Login button */}
-                  <button
-                    onClick={() => { setShowLoginModal(false); setDone(true) }}
-                    style={{ width: '100%', padding: '11px', fontSize: 14, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif', border: 'none', borderRadius: 8, backgroundColor: '#1F4388', color: '#FFFFFF', cursor: 'pointer', transition: 'background-color 150ms', letterSpacing: '0.01em' }}
-                    onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#183272')}
-                    onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#1F4388')}
-                  >
-                    登录
-                  </button>
-
-                  {/* Switch to register */}
-                  <p style={{ textAlign: 'center', fontSize: 12, color: '#8A8F9A', margin: '16px 0 0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                    还没有账号？{' '}
-                    <button
-                      onClick={() => { setLoginTab('register'); setRegCodeSent(false); setRegEmail(''); setRegCode('') }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#1F4388', fontSize: 12, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
-                    >
-                      立即注册
-                    </button>
-                  </p>
-                </>
-              ) : (
-                <>
-                  {/* Register heading */}
-                  <h3 style={{ fontFamily: 'var(--font-noto-serif), serif', fontSize: 18, fontWeight: 700, color: '#0D0D0D', margin: '0 0 4px', letterSpacing: '-0.01em' }}>
-                    {regCodeSent ? '输入验证码' : '创建账号'}
-                  </h3>
-                  <p style={{ fontSize: 12, color: '#8A8F9A', margin: '0 0 20px', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                    {regCodeSent ? `验证码已发送至 ${regEmail}` : '使用四中学生邮箱注册'}
-                  </p>
-
-                  {/* Step 1: email only */}
-                  {!regCodeSent && (
-                    <>
-                      <div style={{ marginBottom: 12 }}>
-                        <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#4A4F5A', marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                          学校邮箱
-                        </label>
-                        <input
-                          type="email"
-                          value={regEmail}
-                          onChange={e => setRegEmail(e.target.value)}
-                          placeholder="yourname@bhsfic.com"
-                          style={{ width: '100%', padding: '10px 12px', fontSize: 14, fontFamily: 'var(--font-noto-sans), sans-serif', border: '1px solid #E2E5EA', borderRadius: 8, color: '#0D0D0D', outline: 'none', transition: 'border-color 150ms', backgroundColor: '#FFFFFF' }}
-                          onFocus={e => (e.currentTarget.style.borderColor = '#1F4388')}
-                          onBlur={e => (e.currentTarget.style.borderColor = '#E2E5EA')}
-                        />
-                        {regEmail.length > 0 && !regEmail.endsWith('@bhsfic.com') && (
-                          <p style={{ fontSize: 11, color: '#A83131', margin: '5px 0 0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                            请使用 @bhsfic.com 邮箱
-                          </p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => { if (regEmail.endsWith('@bhsfic.com')) setRegCodeSent(true) }}
-                        style={{ width: '100%', padding: '11px', fontSize: 14, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif', border: 'none', borderRadius: 8, backgroundColor: '#1F4388', color: '#FFFFFF', cursor: 'pointer', transition: 'background-color 150ms', letterSpacing: '0.01em', marginBottom: 0 }}
-                        onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#183272')}
-                        onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#1F4388')}
-                      >
-                        发送验证码
-                      </button>
-                    </>
-                  )}
-
-                  {/* Step 2: readonly email + code input */}
-                  {regCodeSent && (
-                    <>
-                      <div style={{ marginBottom: 12 }}>
-                        <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#4A4F5A', marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                          学校邮箱
-                        </label>
-                        <input
-                          type="email"
-                          value={regEmail}
-                          readOnly
-                          style={{ width: '100%', padding: '10px 12px', fontSize: 14, fontFamily: 'var(--font-noto-sans), sans-serif', border: '1px solid #E2E5EA', borderRadius: 8, color: '#8A8F9A', outline: 'none', backgroundColor: '#F7F8FA', cursor: 'default' }}
-                        />
-                      </div>
-                      <div style={{ marginBottom: 20 }}>
-                        <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#4A4F5A', marginBottom: 6, fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                          验证码
-                        </label>
-                        <input
-                          type="text"
-                          value={regCode}
-                          onChange={e => setRegCode(e.target.value.replace(/\D/g, ''))}
-                          placeholder="请输入6位验证码"
-                          maxLength={6}
-                          style={{ width: '100%', padding: '10px 12px', fontSize: 14, fontFamily: 'var(--font-noto-sans), sans-serif', border: '1px solid #E2E5EA', borderRadius: 8, color: '#0D0D0D', outline: 'none', letterSpacing: '0.18em', transition: 'border-color 150ms', backgroundColor: '#FFFFFF' }}
-                          onFocus={e => (e.currentTarget.style.borderColor = '#1F4388')}
-                          onBlur={e => (e.currentTarget.style.borderColor = '#E2E5EA')}
-                        />
-                      </div>
-                      <button
-                        onClick={() => { setShowLoginModal(false); setDone(true) }}
-                        style={{ width: '100%', padding: '11px', fontSize: 14, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif', border: 'none', borderRadius: 8, backgroundColor: '#1F4388', color: '#FFFFFF', cursor: 'pointer', transition: 'background-color 150ms', letterSpacing: '0.01em' }}
-                        onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#183272')}
-                        onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#1F4388')}
-                      >
-                        验证并创建账号
-                      </button>
-                      <p style={{ textAlign: 'center', fontSize: 12, color: '#8A8F9A', margin: '12px 0 0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                        没收到？{' '}
-                        <button
-                          onClick={() => setRegCodeSent(false)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#1F4388', fontSize: 12, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
-                        >
-                          重新发送
-                        </button>
-                      </p>
-                    </>
-                  )}
-
-                  {/* Switch to login */}
-                  <p style={{ textAlign: 'center', fontSize: 12, color: '#8A8F9A', margin: '16px 0 0', fontFamily: 'var(--font-noto-sans), sans-serif' }}>
-                    已有账号？{' '}
-                    <button
-                      onClick={() => setLoginTab('login')}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#1F4388', fontSize: 12, fontWeight: 500, fontFamily: 'var(--font-noto-sans), sans-serif', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
-                    >
-                      登录
-                    </button>
-                  </p>
-                </>
-              )}
-            </div>
-          </div>
+function RadioOption({ selected, onClick, label, desc }: { selected: boolean; onClick: () => void; label: string; desc: string }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 12,
+        padding: '12px 14px', borderRadius: 8, cursor: 'pointer',
+        border: `1px solid ${selected ? '#1F4388' : '#ECEEF2'}`,
+        backgroundColor: selected ? '#F5F8FD' : '#FFFFFF',
+        transition: 'all 150ms',
+      }}
+      onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLElement).style.borderColor = '#C8CDD6' }}
+      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLElement).style.borderColor = '#ECEEF2' }}
+    >
+      {/* Radio circle */}
+      <div style={{
+        width: 18, height: 18, borderRadius: '50%', flexShrink: 0, marginTop: 1,
+        border: `2px solid ${selected ? '#1F4388' : '#D0D4DC'}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'border-color 150ms',
+      }}>
+        {selected && <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#1F4388' }} />}
+      </div>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 500, color: '#0D0D0D', fontFamily: 'var(--font-noto-sans), sans-serif', marginBottom: 2 }}>
+          {label}
         </div>
-      )}
+        <div style={{ fontSize: 12, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif', lineHeight: 1.5 }}>
+          {desc}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PillOption({ selected, onClick, label }: { selected: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: '6px 16px', borderRadius: 8, fontSize: 13, fontWeight: 500,
+        fontFamily: 'var(--font-noto-sans), sans-serif', cursor: 'pointer',
+        border: `1px solid ${selected ? '#1F4388' : '#E2E5EA'}`,
+        backgroundColor: selected ? '#E8F0FC' : '#FFFFFF',
+        color: selected ? '#1F4388' : '#4A4F5A',
+        transition: 'all 150ms',
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <span style={{ fontSize: 12, color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif', flexShrink: 0 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 12, fontWeight: 500, color: '#0D0D0D', fontFamily: 'var(--font-noto-sans), sans-serif', textAlign: 'right', maxWidth: '70%' }}>
+        {value}
+      </span>
     </div>
   )
 }
