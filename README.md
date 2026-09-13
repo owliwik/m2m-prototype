@@ -1,36 +1,22 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# M2M · Mentor to Mentee
 
-## Getting Started
+北京四中在校生专属的升学知识与校友对接平台。正在申请海外大学的同学可以浏览校友「大使」写的文章和问答，也可以向大使提问；问题经管理员审核后由大使回答，答案可选择公开到内容流。
 
-First, run the development server:
+仅限学校邮箱注册使用，线上地址：[m2m.bhsfic.net](https://m2m.bhsfic.net)。
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+技术栈：Next.js 16 · React 19 · TypeScript · Tailwind CSS v4 · Supabase · Vercel
+
+## 参与协作
+
+- **所有人先读** [docs/WORKFLOW.md](docs/WORKFLOW.md)：怎么开分支、提交、开 PR（不需要命令行）。
+- **改代码 / 用 AI 工具的人** 再读 [CLAUDE.md](CLAUDE.md)：技术说明、环境变量、数据库规则。
+- 当前进度和任务：[docs/STATUS.md](docs/STATUS.md)
+
+## 本地运行
+
+```
+npm install
+npm run dev   # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+需要维护者提供的 `.env.local`，放在仓库根目录。
