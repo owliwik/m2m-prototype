@@ -33,7 +33,7 @@ const quotes = [
 const whyItems = [
   {
     icon: '◎',
-    title: '来自同一个地方',
+    title: '我们的共同社群',
     body: '这里的每一条内容都来自四中校友。他们了解这所学校的节奏，知道你在哪个位置，说的话不需要打折扣。',
   },
   {
@@ -254,7 +254,7 @@ export default function LandingPage() {
             letterSpacing: '-0.01em',
           }}
         >
-          为什么是 M2M？
+          为什么选择 M2M？
         </h2>
         <div
           style={{
