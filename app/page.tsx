@@ -254,7 +254,7 @@ export default function LandingPage() {
             letterSpacing: '-0.01em',
           }}
         >
-          为什么选择 M2M？
+          为什么选择 M2M
         </h2>
         <div
           style={{
