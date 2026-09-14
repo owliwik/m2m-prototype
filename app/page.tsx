@@ -38,7 +38,7 @@ const whyItems = [
   },
   {
     icon: '◇',
-    title: '没有要卖给你的东西',
+    title: '无偿答疑和服务',
     body: '大使是自愿在这里分享的校友，不卖课，不卖服务。他们在这里只是因为曾经希望有人告诉过自己这些。',
   },
   {
@@ -254,7 +254,7 @@ export default function LandingPage() {
             letterSpacing: '-0.01em',
           }}
         >
-          为什么选择 M2M？
+          为什么选择 M2M
         </h2>
         <div
           style={{
