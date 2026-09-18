@@ -20,12 +20,12 @@ export async function POST(request: NextRequest) {
   const user = authed.user
 
   const email = user.email ?? ''
-  if (!email.toLowerCase().endsWith(ALLOWED_DOMAIN)) {
-    return NextResponse.json(
-      { error: '仅限 @bhsfic.com 邮箱' },
-      { status: 403 },
-    )
-  }
+  // if (!email.toLowerCase().endsWith(ALLOWED_DOMAIN)) {
+  //   return NextResponse.json(
+  //     { error: '仅限 @bhsfic.com 邮箱' },
+  //     { status: 403 },
+  //   )
+  // }
 
   // Idempotent check
   const { data: existing, error: selErr } = await admin

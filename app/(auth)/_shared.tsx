@@ -7,7 +7,8 @@ export const CRIMSON = '#A83131'
 
 export function emailLooksValid(email: string) {
   const at = email.indexOf('@')
-  return at > 0 && email.toLowerCase().endsWith('@bhsfic.com')
+  return at > 0
+  // return at > 0 && email.toLowerCase().endsWith('@bhsfic.com')
 }
 
 export function zhAuthError(msg: string): string {
