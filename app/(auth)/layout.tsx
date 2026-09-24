@@ -9,10 +9,10 @@ type Mode = 'login' | 'register'
 const NAVY = '#1F4388'
 
 const BRAND_COPY: Record<Mode, { headline: string; sub: string }> = {
-  login: {
-    headline: '你想知道的，刚好有人经历过。',
-    sub: '四中校友在另一边，愿意回头说说。',
-  },
+ login: {
+  headline: '连接经历，找到方向.',
+  sub: '四中校友的真实经验，帮你少走一点弯路。',
+},
   register: {
     headline: '一封学校邮箱，连接你和经历过这段路的人。',
     sub: '用 @bhsfic.com 邮箱注册，加入只属于四中的对话。',
@@ -36,18 +36,21 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
         backgroundColor: '#FFFFFF',
       }}
     >
-      {/* Brand panel — always left, persistent across route changes */}
       <div
-        style={{
-          width: '50%',
-          backgroundColor: NAVY,
-          color: '#FFFFFF',
-          padding: '64px 56px',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'space-between',
-        }}
-      >
+  style={{
+    width: '60%',
+    backgroundImage:
+      "linear-gradient(rgba(18, 48, 105, 0.38), rgba(18, 48, 105, 0.38)), url('/login-bg.jpg')",
+    backgroundSize: 'auto 110%',
+    backgroundPosition: 'center -70px',
+    backgroundRepeat: 'no-repeat',
+    color: '#FFFFFF',
+    padding: '64px 56px',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'space-between',
+  }}
+>
         <Link
           href="/"
           style={{
@@ -61,14 +64,19 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
         >
           M2M
         </Link>
-
+<div
+  style={{
+    maxWidth: 410,
+    transform: 'translateY(90px)',
+  }}
+></div>
         <div style={{ maxWidth: 420 }}>
           <div key={`brand-${mode}`} className="brand-text-in">
             <p
               style={{
                 fontFamily: 'var(--font-noto-serif), serif',
-                fontSize: 30,
-                lineHeight: 1.45,
+                fontSize: 38,
+                lineHeight: 1.35,
                 fontWeight: 700,
                 color: '#FFFFFF',
                 margin: 0,
@@ -80,9 +88,9 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
             <p
               style={{
                 fontFamily: 'var(--font-noto-sans), sans-serif',
-                fontSize: 14,
+                fontSize: 16,
                 lineHeight: 1.8,
-                color: 'rgba(255,255,255,0.72)',
+                color: 'rgba(255,255,255,0.82)',
                 margin: '18px 0 0',
               }}
             >
@@ -107,7 +115,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
       {/* Form panel — always right; child page fades in on route change */}
       <div
         style={{
-          width: '50%',
+          width: '47%',
           overflowY: 'auto',
           display: 'flex',
           alignItems: 'center',

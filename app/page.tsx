@@ -33,25 +33,25 @@ const quotes = [
 const whyItems = [
   {
     icon: '◎',
-    title: '我们的共同社群',
-    body: '这里的每一条内容都来自四中校友。他们了解这所学校的节奏，知道你在哪个位置，说的话不需要打折扣。',
+    title: '都是四中人',
+    body: '校友熟悉学校的课程、活动和申请节奏。很多背景不用从头解释，问题可以直接聊到点上。',
   },
   {
     icon: '◇',
-    title: '无偿答疑和服务',
-    body: '大使是自愿在这里分享的校友，不卖课，不卖服务。他们在这里只是因为曾经希望有人告诉过自己这些。',
+    title: '聊聊亲身经历',
+    body: '大使都是自愿来分享的校友。他们会聊自己当时怎么想、怎么选，也愿意回答在校生的问题。',
   },
   {
     icon: '△',
-    title: '只在四中内部',
-    body: '用学校邮箱验证，内容不对外公开。这里说的话留在自己人之间。',
+    title: '只对四中开放',
+    body: '用学校邮箱验证后才能进入，内容不会对外公开。申请里的纠结，可以在这里说得具体一点。',
   },
 ]
 
 const steps = [
-  { num: '01', title: '用学校邮箱进来', body: '用 @bhsfic.com 邮箱验证身份，这是唯一的门槛。' },
-  { num: '02', title: '看看校友留下的东西', body: '读他们写的，或者找一个你想直接聊的人。' },
-  { num: '03', title: '提交你的问题', body: '我们来协调安排，不需要你自己去找人打招呼。' },
+  { num: '01', title: '先用学校邮箱登录', body: '用 @bhsfic.com 邮箱完成验证，就可以进来了。' },
+  { num: '02', title: '先看看大家聊过什么', body: '可以读校友分享的经历，也可以找一位你想聊的校友。' },
+  { num: '03', title: '把问题发出来', body: '把想问的写清楚，后面的联系和安排交给我们，不用自己到处找人。' },
 ]
 
 export default function LandingPage() {
@@ -60,10 +60,15 @@ export default function LandingPage() {
       {/* Hero */}
       <section
         style={{
-          maxWidth: 1120,
+          width: '100%',
+          boxSizing: 'border-box',
           margin: '0 auto',
           padding: '96px 24px 80px',
           textAlign: 'center',
+          backgroundImage:
+            "linear-gradient(rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.72)), url('/bhsfic-hero-background.png')",
+          backgroundSize: 'cover',
+          backgroundPosition: 'center 46%',
         }}
       >
         <p
@@ -94,7 +99,7 @@ export default function LandingPage() {
             margin: '0 auto 28px',
           }}
         >
-          你想知道的，刚好有人经历过
+          申请里拿不准的事，问问走过这条路的四中校友
         </h1>
 
         <p
@@ -108,7 +113,7 @@ export default function LandingPage() {
             fontFamily: 'var(--font-noto-sans), sans-serif',
           }}
         >
-          M2M 是四中自己的地方。校友在这里留下他们真实经历过的，在校生来这里读、来这里问。没有商业利益，没有标准答案，只有同一所学校走出去的人彼此说的话。
+          在 M2M，你可以看看四中校友怎么走过申请，也可以把自己的问题直接提出来。这里分享亲身经历，也欢迎你来提问。
         </p>
 
         <div
@@ -254,7 +259,7 @@ export default function LandingPage() {
             letterSpacing: '-0.01em',
           }}
         >
-          为什么选择 M2M
+          为什么来这里问
         </h2>
         <div
           style={{
@@ -335,7 +340,7 @@ export default function LandingPage() {
               letterSpacing: '-0.01em',
             }}
           >
-            大使说
+            听校友自己说
           </h2>
           <div
             style={{
@@ -451,7 +456,7 @@ export default function LandingPage() {
             letterSpacing: '-0.01em',
           }}
         >
-          如何开始
+          怎么开始
         </h2>
         <div
           style={{
@@ -531,7 +536,7 @@ export default function LandingPage() {
               letterSpacing: '-0.01em',
             }}
           >
-            这里的人曾经和你站在同一个位置
+            有拿不准的事，就来问问四中校友
           </h2>
           <p
             style={{
@@ -543,7 +548,7 @@ export default function LandingPage() {
               fontFamily: 'var(--font-noto-sans), sans-serif',
             }}
           >
-            现在他们在另一边，愿意回头说说。
+            他们已经走过一遍，愿意和你聊聊当时怎么想、怎么选。
           </p>
           <div style={{ display: 'flex', gap: 16, justifyContent: 'center', flexWrap: 'wrap' }}>
             <Link
@@ -566,7 +571,7 @@ export default function LandingPage() {
               用学校邮箱加入
             </Link>
             <Link
-              href="/ambassadors"
+              href="/feed"
               style={{
                 border: '1px solid rgba(255,255,255,0.4)',
                 color: '#FFFFFF',
@@ -586,7 +591,7 @@ export default function LandingPage() {
                 (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.4)')
               }
             >
-              浏览大使
+              浏览校友分享
             </Link>
           </div>
         </div>
