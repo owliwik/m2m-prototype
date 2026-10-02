@@ -88,7 +88,7 @@ npm run build    # PR 前必须通过
 
 ### 数据读写的分工
 
-- **读**：页面直接用浏览器端 `supabase` client 查，靠 RLS 控制可见范围。
+- **读**：普通内容页面直接用浏览器端 `supabase` client 查，靠 RLS 控制可见范围。大使收件箱和审核通过的公开待答提问由 `GET /api/requests/inbox`、`GET /api/requests/public` 提供；服务端使用 service role 前先验证 JWT，并按角色、分配关系及公开状态限制返回字段。
 - **写（提问链路）**：页面 `fetch('/api/...')` 并带上 `Authorization: Bearer <access_token>`，route handler 用 service-role client 写库。
 - 因为 service role 绕过 RLS，**route handler 里必须自己做鉴权和校验**：`getAuthedUser` / `requireAdmin`、确认当前用户就是被分配的大使、状态机检查（`status` 不对返回 409）。新增写接口时照这个模式来。
 
@@ -108,7 +108,7 @@ npm run build    # PR 前必须通过
 1. 学生在 `/ask` 提交 → `POST /api/requests`：校验（问题 ≥ 30 字、必须选学校和至少一位大使），写 `requests`（`status = pending`）+ 每位大使一行 `request_ambassadors`（`status = sent`），给所有 admin 发邮件。
 2. 管理员在 `/admin` 看 pending 列表 → `POST /api/requests/[id]/approve` 或 `/reject`（仅 `pending` 可操作）。通过后给被分配的大使发邮件，链接到 `/my/inbox/[id]`；驳回目前**不**通知学生。
 3. 大使在 `/my/inbox/[id]` 回答 → `POST /api/requests/[id]/answer`：确认是被分配的大使、回答 ≥ 20 字；用 `update ... where status = 'approved'` 原子地把请求置为 `done`（多位大使抢答时只有一个成功，其余 409），然后插入 `posts`（`kind = 'qa'`，继承 `visibility` 和 `is_anonymous`），把该大使的分配行置为 `responded`，给学生发邮件链接到 `/feed/[postId]`。
-4. 发布：`/feed` 列表只查 `visibility = 'public'` 的 post；私下问答的可见范围靠 RLS。
+4. 发布：`/feed` 还展示审核通过、公开、未回答的提问；回答后列表展示 `visibility = 'public'` 的 post。私下问答的可见范围靠 RLS。
 
 ### Supabase Dashboard 手动配置（不在代码里）
 
@@ -169,6 +169,8 @@ npm run build    # PR 前必须通过
 | `POST /api/requests/[id]/approve` | 通过 + 通知大使 | JWT + `admin` |
 | `POST /api/requests/[id]/reject` | 驳回（不发邮件） | JWT + `admin` |
 | `POST /api/requests/[id]/answer` | 回答 → 生成 Q&A post + 通知学生 | JWT + 被分配的大使 |
+| `GET /api/requests/inbox` | 大使的已审核提问，可用 `?id=` 取单条 | JWT + `ambassador` + 分配关系 |
+| `GET /api/requests/public` | 审核通过的公开待答提问 | JWT |
 
 **尚未实现**：学生侧「我的提问 / 通知」页（旧文档里的 `/me`，目前没有这个路由）、大使拒答（`declined`）、驳回时通知学生。进度见 `docs/STATUS.md`。
 

@@ -41,6 +41,14 @@ type PostWithRels = PostRow & {
   school: SchoolRow
 }
 
+type OpenQuestion = {
+  id: string
+  created_at: string
+  question: string
+  student_name: string
+  school_name: string
+}
+
 type SchoolWithAmbassadors = SchoolRow & {
   ambassadors: Array<{ id: string; user: { id: string; name: string } }>
 }
@@ -281,6 +289,7 @@ export default function FeedPage() {
   const { ready: authReady } = useRequireAuth()
   const [selectedType, setSelectedType] = useState<ContentType | null>(null)
   const [posts, setPosts] = useState<PostWithRels[]>([])
+  const [openQuestions, setOpenQuestions] = useState<OpenQuestion[]>([])
   const [schools, setSchools] = useState<SchoolWithAmbassadors[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -292,7 +301,13 @@ export default function FeedPage() {
     async function load() {
       setLoading(true)
       setError(null)
-      const [postsRes, schoolsRes] = await Promise.all([
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setError('会话已过期，请重新登录')
+        setLoading(false)
+        return
+      }
+      const [postsRes, schoolsRes, questionsRes] = await Promise.all([
         supabase
           .from('posts')
           .select('*, author:users!posts_author_id_fkey(*), school:schools(*)')
@@ -302,15 +317,25 @@ export default function FeedPage() {
         supabase
           .from('schools')
           .select('*, ambassadors(id, user:users(id, name))'),
+        fetch('/api/requests/public', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          cache: 'no-store',
+        }).then(async res => {
+          const payload = await res.json()
+          if (!res.ok) throw new Error(payload.error ?? '公开提问加载失败')
+          return payload.questions as OpenQuestion[]
+        }).then(data => ({ data, error: null as string | null }))
+          .catch(error => ({ data: [] as OpenQuestion[], error: error instanceof Error ? error.message : '公开提问加载失败' })),
       ])
       if (cancelled) return
-      if (postsRes.error || schoolsRes.error) {
-        setError(postsRes.error?.message ?? schoolsRes.error?.message ?? '加载失败')
+      if (postsRes.error || schoolsRes.error || questionsRes.error) {
+        setError(postsRes.error?.message ?? schoolsRes.error?.message ?? questionsRes.error ?? '加载失败')
         setLoading(false)
         return
       }
       setPosts((postsRes.data as unknown as PostWithRels[] | null) ?? [])
       setSchools((schoolsRes.data as unknown as SchoolWithAmbassadors[] | null) ?? [])
+      setOpenQuestions(questionsRes.data)
       setLoading(false)
     }
     load()
@@ -321,17 +346,19 @@ export default function FeedPage() {
 
   // Filter + counts
   const filtered = posts.filter(p => {
+    if (selectedType === '公开问答') return p.kind === 'qa'
     if (selectedType && p.content_type !== selectedType) return false
     return true
   })
 
-  const totalCount = posts.length
+  const visibleQuestions = !selectedType || selectedType === '公开问答' ? openQuestions : []
+  const totalCount = posts.length + openQuestions.length
   const postCountsBySchool: Record<string, number> = {}
   for (const p of posts) {
     postCountsBySchool[p.school.id] = (postCountsBySchool[p.school.id] ?? 0) + 1
   }
   const typeCounts = Object.fromEntries(
-    sidebarTypes.map(t => [t, posts.filter(p => p.content_type === t).length]),
+    sidebarTypes.map(t => [t, posts.filter(p => t === '公开问答' ? p.kind === 'qa' : p.content_type === t).length + (t === '公开问答' ? openQuestions.length : 0)]),
   ) as Record<ContentType, number>
 
   return (
@@ -417,12 +444,19 @@ export default function FeedPage() {
             <div>
               {Array.from({ length: 4 }).map((_, i) => <PostCardSkeleton key={i} />)}
             </div>
-          ) : filtered.length === 0 ? (
+          ) : filtered.length === 0 && visibleQuestions.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '80px 0', color: '#8A8F9A', fontFamily: 'var(--font-noto-sans), sans-serif', fontSize: 14 }}>
               没有符合条件的内容
             </div>
           ) : (
             <div>
+              {visibleQuestions.map(q => (
+                <div key={q.id} style={{ border: '1px solid #ECEEF2', borderRadius: 10, padding: '18px 20px', marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, color: '#A83131', fontWeight: 600, marginBottom: 10 }}>公开提问 · 待大使回答</div>
+                  <div style={{ fontSize: 16, color: '#0D0D0D', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{q.question}</div>
+                  <div style={{ fontSize: 13, color: '#8A8F9A', marginTop: 12 }}>{q.school_name} · {q.student_name}</div>
+                </div>
+              ))}
               {filtered.map(p => {
                 if (p.kind === 'note') return <EssayCard key={p.id} item={toEssayShape(p)} />
                 if (p.kind === 'qa') return <QACard key={p.id} item={toQAShape(p)} />

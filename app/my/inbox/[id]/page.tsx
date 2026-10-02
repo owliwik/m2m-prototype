@@ -12,6 +12,8 @@ type UserRow = Database['public']['Tables']['users']['Row']
 
 type RequestDetail = {
   id: string
+  request_id: string
+  request_status: 'pending' | 'approved' | 'rejected' | 'done'
   created_at: string
   question: string
   comm_pref: string | null
@@ -44,53 +46,36 @@ export default function InboxDetailPage({
     if (!ready || !user) return
     let cancelled = false
     async function load() {
-      const { data, error } = await supabase
-        .from('request_ambassadors')
-        .select(
-          `
-          status,
-          request:requests(
-            id, created_at, question, comm_pref, duration, status, visibility, is_anonymous,
-            student:users!requests_student_id_fkey(name, email),
-            school:schools(name_zh, name_en, color_bg, color_fg)
-          )
-          `,
-        )
-        .eq('request_id', requestId)
-        .eq('ambassador_id', user!.id)
-        .maybeSingle()
-
-      if (cancelled) return
-      if (error) {
-        setLoadError(error.message)
-        setLoading(false)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        if (!cancelled) setLoadError('会话已过期，请重新登录')
+        if (!cancelled) setLoading(false)
         return
       }
-      if (!data) {
+      let entry: RequestDetail | undefined
+      try {
+        const res = await fetch(`/api/requests/inbox?id=${encodeURIComponent(requestId)}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          cache: 'no-store',
+        })
+        const payload = await res.json()
+        if (!res.ok) throw new Error(payload.error ?? '加载失败')
+        entry = payload.entries?.[0] as RequestDetail | undefined
+      } catch (error) {
+        if (!cancelled) setLoadError(error instanceof Error ? error.message : '加载失败')
+        if (!cancelled) setLoading(false)
+        return
+      }
+      if (cancelled) return
+      if (!entry) {
         setLoadError('此提问不存在或未指派给你')
         setLoading(false)
         return
       }
-      const r = Array.isArray(data.request) ? data.request[0] : data.request
-      if (!r) {
-        setLoadError('数据缺失')
-        setLoading(false)
-        return
-      }
-      const student = Array.isArray(r.student) ? r.student[0] ?? null : r.student
-      const school = Array.isArray(r.school) ? r.school[0] ?? null : r.school
       setDetail({
-        id: r.id,
-        created_at: r.created_at,
-        question: r.question,
-        comm_pref: r.comm_pref,
-        duration: r.duration,
-        visibility: r.visibility as 'public' | 'private',
-        is_anonymous: r.is_anonymous,
-        status: r.status as RequestDetail['status'],
-        assignment_status: data.status as RequestDetail['assignment_status'],
-        student,
-        school,
+        ...entry,
+        id: entry.request_id,
+        status: entry.request_status,
       })
       setLoading(false)
     }

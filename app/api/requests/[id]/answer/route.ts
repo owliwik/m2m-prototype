@@ -38,6 +38,9 @@ export async function POST(
   if (!assignment) {
     return NextResponse.json({ error: '你未被指定回答此问题' }, { status: 403 })
   }
+  if (assignment.status !== 'sent') {
+    return NextResponse.json({ error: '此提问已处理，无法再次回答' }, { status: 409 })
+  }
 
   // Atomically claim the request. The WHERE clause includes status='approved' so
   // a second ambassador racing on the same request gets 0 rows affected and aborts
