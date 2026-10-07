@@ -32,20 +32,29 @@ export async function POST(
   if (!request) {
     return NextResponse.json({ error: '请求不存在' }, { status: 404 })
   }
-  if (request.status !== 'pending') {
+  const resend = request.status === 'approved' &&
+    (await req.json().catch(() => ({})))?.resend === true
+  if (request.status !== 'pending' && !resend) {
     return NextResponse.json(
       { error: `当前状态 ${request.status}，无法重复审核` },
       { status: 409 },
     )
   }
 
-  // Mark approved
-  const { error: updErr } = await admin
-    .from('requests')
-    .update({ status: 'approved' })
-    .eq('id', requestId)
-  if (updErr) {
-    return NextResponse.json({ error: updErr.message }, { status: 500 })
+  if (!resend) {
+    const { data: updated, error: updErr } = await admin
+      .from('requests')
+      .update({ status: 'approved' })
+      .eq('id', requestId)
+      .eq('status', 'pending')
+      .select('id')
+      .maybeSingle()
+    if (updErr) {
+      return NextResponse.json({ error: updErr.message }, { status: 500 })
+    }
+    if (!updated) {
+      return NextResponse.json({ error: '此问题已被审核' }, { status: 409 })
+    }
   }
 
   // Look up assigned ambassadors' emails
@@ -62,13 +71,15 @@ export async function POST(
 
   if (asgErr) {
     console.error('[approve] failed to load assignments:', asgErr.message)
+    return NextResponse.json({
+      ok: true,
+      email: { sent: 0, failed: 1 },
+    })
   }
 
-  notifyAmbassadors(request, assignments ?? []).catch(err =>
-    console.error('[notifyAmbassadors] failed:', err),
-  )
+  const email = await notifyAmbassadors(request, assignments ?? [], req.nextUrl.origin)
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, email })
 }
 
 type RequestRow = {
@@ -93,7 +104,11 @@ function pickOne<T>(v: T | T[] | null): T | null {
   return v
 }
 
-async function notifyAmbassadors(request: RequestRow, assignments: Assignment[]) {
+async function notifyAmbassadors(
+  request: RequestRow,
+  assignments: Assignment[],
+  origin: string,
+): Promise<{ sent: number; failed: number }> {
   const recipients = assignments
     .map(a => pickOne(a.ambassador))
     .map(amb => pickOne(amb?.user ?? null))
@@ -101,7 +116,7 @@ async function notifyAmbassadors(request: RequestRow, assignments: Assignment[])
 
   if (recipients.length === 0) {
     console.warn('[notifyAmbassadors] no ambassador emails for request', request.id)
-    return
+    return { sent: 0, failed: Math.max(assignments.length, 1) }
   }
 
   const student = pickOne(request.student)
@@ -111,10 +126,10 @@ async function notifyAmbassadors(request: RequestRow, assignments: Assignment[])
     ? `${studentName}（希望公开匿名）`
     : studentName
   const schoolLabel = school?.name_zh ?? ''
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? origin
   const answerLink = `${baseUrl}/my/inbox/${request.id}`
 
-  for (const r of recipients) {
+  const results = await Promise.all(recipients.map(async r => {
     const html = `
       <div style="font-family:system-ui,-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.7;color:#0D0D0D;">
         <p style="font-size:16px;font-weight:600;margin:0 0 16px;">${escapeHtml(r.name)}，你好</p>
@@ -126,7 +141,7 @@ async function notifyAmbassadors(request: RequestRow, assignments: Assignment[])
         <p style="margin:20px 0 0;">
           <a href="${answerLink}" style="display:inline-block;padding:10px 20px;background:#1F4388;color:#FFFFFF;border-radius:8px;text-decoration:none;font-weight:500;">查看并回复</a>
         </p>
-        <p style="margin:24px 0 0;font-size:12px;color:#8A8F9A;">如果不方便回答，也可以直接在此邮件回复说明。</p>
+        <p style="margin:24px 0 0;font-size:12px;color:#8A8F9A;">请点击上方链接，登录网站后回复问题。</p>
       </div>
     `
     const result = await sendEmail({
@@ -137,5 +152,8 @@ async function notifyAmbassadors(request: RequestRow, assignments: Assignment[])
     if (!result.ok) {
       console.error(`[notifyAmbassadors] send to ${r.email} failed:`, result.error)
     }
-  }
+    return result.ok
+  }))
+  const sent = results.filter(Boolean).length
+  return { sent, failed: assignments.length - sent }
 }
