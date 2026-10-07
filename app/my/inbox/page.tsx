@@ -68,59 +68,30 @@ export default function InboxPage() {
     setLoading(true)
     setLoadError(null)
 
-    const { data, error } = await supabase
-      .from('request_ambassadors')
-      .select(
-        `
-        status,
-        request:requests(
-          id, created_at, question, comm_pref, duration, status, visibility, is_anonymous,
-          student:users!requests_student_id_fkey(name),
-          school:schools(name_zh, color_bg, color_fg)
-        )
-        `,
-      )
-      .eq('ambassador_id', user.id)
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      setLoadError(error.message)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      setLoadError('会话已过期，请重新登录')
       setLoading(false)
       return
     }
-
-    const rows: InboxEntry[] = (data ?? [])
-      .map(row => {
-        const r = Array.isArray(row.request) ? row.request[0] : row.request
-        if (!r) return null
-        const student = Array.isArray(r.student) ? r.student[0] ?? null : r.student
-        const school = Array.isArray(r.school) ? r.school[0] ?? null : r.school
-        return {
-          request_id: r.id,
-          assignment_status: row.status as InboxEntry['assignment_status'],
-          request_status: r.status as InboxEntry['request_status'],
-          created_at: r.created_at,
-          question: r.question,
-          comm_pref: r.comm_pref,
-          duration: r.duration,
-          visibility: r.visibility as 'public' | 'private',
-          is_anonymous: r.is_anonymous,
-          student,
-          school,
-        }
+    try {
+      const res = await fetch('/api/requests/inbox', {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        cache: 'no-store',
       })
-      .filter((x): x is InboxEntry => !!x)
-
-    setEntries(rows)
+      const payload = await res.json()
+      if (!res.ok) throw new Error(payload.error ?? '加载失败')
+      setEntries(payload.entries as InboxEntry[])
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : '加载失败')
+    }
     setLoading(false)
   }, [user])
 
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!isAmbassador) return
     load()
   }, [isAmbassador, load])
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   if (!ready || !roleChecked) return <CenterMessage text="加载中…" />
   if (!isAmbassador) return <CenterMessage text="正在跳转…" />
