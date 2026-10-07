@@ -45,7 +45,7 @@ export default function AdminPage() {
   // Per-row UI state — keyed by request id
   const [busy, setBusy] = useState<Record<string, 'approve' | 'reject' | null>>({})
   const [rowError, setRowError] = useState<Record<string, string | null>>({})
-  const [emailRetryIds, setEmailRetryIds] = useState<Set<string>>(new Set())
+  const [emailRetryTargets, setEmailRetryTargets] = useState<Record<string, string[]>>({})
 
   // Role check
   useEffect(() => {
@@ -132,7 +132,8 @@ export default function AdminPage() {
   }, [isAdmin, loadPending])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  async function act(id: string, kind: 'approve' | 'reject', resend = false) {
+  async function act(id: string, kind: 'approve' | 'reject', resendIds?: string[]) {
+    const resend = resendIds !== undefined
     setBusy(b => ({ ...b, [id]: kind }))
     setRowError(e => ({ ...e, [id]: null }))
 
@@ -150,7 +151,10 @@ export default function AdminPage() {
         Authorization: `Bearer ${token}`,
         ...(resend ? { 'Content-Type': 'application/json' } : {}),
       },
-      ...(resend ? { body: JSON.stringify({ resend: true }) } : {}),
+      ...(resend ? { body: JSON.stringify({
+        resend: true,
+        ...(resendIds.length ? { ambassador_ids: resendIds } : {}),
+      }) } : {}),
     })
     const payload = await res.json().catch(() => ({}))
 
@@ -161,7 +165,10 @@ export default function AdminPage() {
     }
 
     if (kind === 'approve' && payload?.email?.failed > 0) {
-      setEmailRetryIds(ids => new Set(ids).add(id))
+      setEmailRetryTargets(targets => ({
+        ...targets,
+        [id]: Array.isArray(payload.email.failedIds) ? payload.email.failedIds : [],
+      }))
       setRowError(e => ({
         ...e,
         [id]: '审核已通过，但大使通知邮件发送失败。请检查邮件配置后点击「重发邮件」。',
@@ -171,7 +178,11 @@ export default function AdminPage() {
     }
 
     setRequests(rs => rs.filter(r => r.id !== id))
-    setEmailRetryIds(ids => { const next = new Set(ids); next.delete(id); return next })
+    setEmailRetryTargets(targets => {
+      const next = { ...targets }
+      delete next[id]
+      return next
+    })
     setBusy(b => ({ ...b, [id]: null }))
   }
 
@@ -240,8 +251,8 @@ export default function AdminPage() {
               r={r}
               busyKind={busy[r.id] ?? null}
               error={rowError[r.id] ?? null}
-              emailRetry={emailRetryIds.has(r.id)}
-              onApprove={() => act(r.id, 'approve', emailRetryIds.has(r.id))}
+              emailRetry={Object.hasOwn(emailRetryTargets, r.id)}
+              onApprove={() => act(r.id, 'approve', emailRetryTargets[r.id])}
               onReject={() => act(r.id, 'reject')}
             />
           ))}

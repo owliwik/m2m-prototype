@@ -32,8 +32,10 @@ export async function POST(
   if (!request) {
     return NextResponse.json({ error: '请求不存在' }, { status: 404 })
   }
-  const resend = request.status === 'approved' &&
-    (await req.json().catch(() => ({})))?.resend === true
+  const body: { resend?: unknown; ambassador_ids?: unknown } = request.status === 'approved'
+    ? await req.json().catch(() => ({}))
+    : {}
+  const resend = request.status === 'approved' && body?.resend === true
   if (request.status !== 'pending' && !resend) {
     return NextResponse.json(
       { error: `当前状态 ${request.status}，无法重复审核` },
@@ -62,6 +64,7 @@ export async function POST(
     .from('request_ambassadors')
     .select(
       `
+      ambassador_id,
       ambassador:ambassadors(
         user:users!ambassadors_id_fkey(name, email)
       )
@@ -73,11 +76,20 @@ export async function POST(
     console.error('[approve] failed to load assignments:', asgErr.message)
     return NextResponse.json({
       ok: true,
-      email: { sent: 0, failed: 1 },
+      email: { sent: 0, failed: 1, failedIds: [] },
     })
   }
 
-  const email = await notifyAmbassadors(request, assignments ?? [], req.nextUrl.origin)
+  const requestedIds: string[] | null = resend && Array.isArray(body.ambassador_ids)
+    ? body.ambassador_ids.filter((id: unknown): id is string => typeof id === 'string')
+    : null
+  if (requestedIds && requestedIds.some(id => !assignments?.some(a => a.ambassador_id === id))) {
+    return NextResponse.json({ error: '重发对象未被指定回答此问题' }, { status: 400 })
+  }
+  const targets = requestedIds
+    ? (assignments ?? []).filter(a => requestedIds.includes(a.ambassador_id))
+    : (assignments ?? [])
+  const email = await notifyAmbassadors(request, targets, req.nextUrl.origin)
 
   return NextResponse.json({ ok: true, email })
 }
@@ -93,6 +105,7 @@ type RequestRow = {
 }
 
 type Assignment = {
+  ambassador_id: string
   ambassador:
     | { user: { name: string; email: string } | { name: string; email: string }[] | null }
     | { user: { name: string; email: string } | { name: string; email: string }[] | null }[]
@@ -108,15 +121,10 @@ async function notifyAmbassadors(
   request: RequestRow,
   assignments: Assignment[],
   origin: string,
-): Promise<{ sent: number; failed: number }> {
-  const recipients = assignments
-    .map(a => pickOne(a.ambassador))
-    .map(amb => pickOne(amb?.user ?? null))
-    .filter((u): u is { name: string; email: string } => !!u?.email)
-
-  if (recipients.length === 0) {
+): Promise<{ sent: number; failed: number; failedIds: string[] }> {
+  if (assignments.length === 0) {
     console.warn('[notifyAmbassadors] no ambassador emails for request', request.id)
-    return { sent: 0, failed: Math.max(assignments.length, 1) }
+    return { sent: 0, failed: 1, failedIds: [] }
   }
 
   const student = pickOne(request.student)
@@ -129,7 +137,13 @@ async function notifyAmbassadors(
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? origin
   const answerLink = `${baseUrl}/my/inbox/${request.id}`
 
-  const results = await Promise.all(recipients.map(async r => {
+  const results = await Promise.all(assignments.map(async assignment => {
+    const amb = pickOne(assignment.ambassador)
+    const r = pickOne(amb?.user ?? null)
+    if (!r?.email) {
+      console.error('[notifyAmbassadors] no email for ambassador', assignment.ambassador_id)
+      return { id: assignment.ambassador_id, ok: false }
+    }
     const html = `
       <div style="font-family:system-ui,-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.7;color:#0D0D0D;">
         <p style="font-size:16px;font-weight:600;margin:0 0 16px;">${escapeHtml(r.name)}，你好</p>
@@ -152,8 +166,8 @@ async function notifyAmbassadors(
     if (!result.ok) {
       console.error(`[notifyAmbassadors] send to ${r.email} failed:`, result.error)
     }
-    return result.ok
+    return { id: assignment.ambassador_id, ok: result.ok }
   }))
-  const sent = results.filter(Boolean).length
-  return { sent, failed: assignments.length - sent }
+  const failedIds = results.filter(result => !result.ok).map(result => result.id)
+  return { sent: assignments.length - failedIds.length, failed: failedIds.length, failedIds }
 }
