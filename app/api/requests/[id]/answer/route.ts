@@ -101,8 +101,8 @@ export async function POST(
     .update({ status: 'responded' })
     .eq('id', assignment.id)
 
-  // Notify student (best-effort)
-  notifyStudent(claimed, post.id, answer).catch(err =>
+  // Finish the notification before returning from the serverless request.
+  await notifyStudent(claimed, post.id, answer, req.nextUrl.origin).catch(err =>
     console.error('[notifyStudent] failed:', err),
   )
 
@@ -123,14 +123,14 @@ function pickOne<T>(v: T | T[] | null): T | null {
   return v
 }
 
-async function notifyStudent(req: ClaimedRequest, postId: string, answer: string) {
+async function notifyStudent(req: ClaimedRequest, postId: string, answer: string, origin: string) {
   const student = pickOne(req.student)
   if (!student?.email) {
     console.warn('[notifyStudent] no student email for request', req.id)
     return
   }
   const school = pickOne(req.school)
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? origin
   const link = `${baseUrl}/feed/${postId}`
   const preview = answer.length > 300 ? answer.slice(0, 300) + '…' : answer
 

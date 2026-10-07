@@ -32,20 +32,31 @@ export async function POST(
   if (!request) {
     return NextResponse.json({ error: '请求不存在' }, { status: 404 })
   }
-  if (request.status !== 'pending') {
+  const body: { resend?: unknown; ambassador_ids?: unknown } = request.status === 'approved'
+    ? await req.json().catch(() => ({}))
+    : {}
+  const resend = request.status === 'approved' && body?.resend === true
+  if (request.status !== 'pending' && !resend) {
     return NextResponse.json(
       { error: `当前状态 ${request.status}，无法重复审核` },
       { status: 409 },
     )
   }
 
-  // Mark approved
-  const { error: updErr } = await admin
-    .from('requests')
-    .update({ status: 'approved' })
-    .eq('id', requestId)
-  if (updErr) {
-    return NextResponse.json({ error: updErr.message }, { status: 500 })
+  if (!resend) {
+    const { data: updated, error: updErr } = await admin
+      .from('requests')
+      .update({ status: 'approved' })
+      .eq('id', requestId)
+      .eq('status', 'pending')
+      .select('id')
+      .maybeSingle()
+    if (updErr) {
+      return NextResponse.json({ error: updErr.message }, { status: 500 })
+    }
+    if (!updated) {
+      return NextResponse.json({ error: '此问题已被审核' }, { status: 409 })
+    }
   }
 
   // Look up assigned ambassadors' emails
@@ -53,6 +64,7 @@ export async function POST(
     .from('request_ambassadors')
     .select(
       `
+      ambassador_id,
       ambassador:ambassadors(
         user:users!ambassadors_id_fkey(name, email)
       )
@@ -62,13 +74,24 @@ export async function POST(
 
   if (asgErr) {
     console.error('[approve] failed to load assignments:', asgErr.message)
+    return NextResponse.json({
+      ok: true,
+      email: { sent: 0, failed: 1, failedIds: [] },
+    })
   }
 
-  notifyAmbassadors(request, assignments ?? []).catch(err =>
-    console.error('[notifyAmbassadors] failed:', err),
-  )
+  const requestedIds: string[] | null = resend && Array.isArray(body.ambassador_ids)
+    ? body.ambassador_ids.filter((id: unknown): id is string => typeof id === 'string')
+    : null
+  if (requestedIds && requestedIds.some(id => !assignments?.some(a => a.ambassador_id === id))) {
+    return NextResponse.json({ error: '重发对象未被指定回答此问题' }, { status: 400 })
+  }
+  const targets = requestedIds
+    ? (assignments ?? []).filter(a => requestedIds.includes(a.ambassador_id))
+    : (assignments ?? [])
+  const email = await notifyAmbassadors(request, targets, req.nextUrl.origin)
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, email })
 }
 
 type RequestRow = {
@@ -82,6 +105,7 @@ type RequestRow = {
 }
 
 type Assignment = {
+  ambassador_id: string
   ambassador:
     | { user: { name: string; email: string } | { name: string; email: string }[] | null }
     | { user: { name: string; email: string } | { name: string; email: string }[] | null }[]
@@ -93,15 +117,14 @@ function pickOne<T>(v: T | T[] | null): T | null {
   return v
 }
 
-async function notifyAmbassadors(request: RequestRow, assignments: Assignment[]) {
-  const recipients = assignments
-    .map(a => pickOne(a.ambassador))
-    .map(amb => pickOne(amb?.user ?? null))
-    .filter((u): u is { name: string; email: string } => !!u?.email)
-
-  if (recipients.length === 0) {
+async function notifyAmbassadors(
+  request: RequestRow,
+  assignments: Assignment[],
+  origin: string,
+): Promise<{ sent: number; failed: number; failedIds: string[] }> {
+  if (assignments.length === 0) {
     console.warn('[notifyAmbassadors] no ambassador emails for request', request.id)
-    return
+    return { sent: 0, failed: 1, failedIds: [] }
   }
 
   const student = pickOne(request.student)
@@ -111,10 +134,16 @@ async function notifyAmbassadors(request: RequestRow, assignments: Assignment[])
     ? `${studentName}（希望公开匿名）`
     : studentName
   const schoolLabel = school?.name_zh ?? ''
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? origin
   const answerLink = `${baseUrl}/my/inbox/${request.id}`
 
-  for (const r of recipients) {
+  const results = await Promise.all(assignments.map(async assignment => {
+    const amb = pickOne(assignment.ambassador)
+    const r = pickOne(amb?.user ?? null)
+    if (!r?.email) {
+      console.error('[notifyAmbassadors] no email for ambassador', assignment.ambassador_id)
+      return { id: assignment.ambassador_id, ok: false }
+    }
     const html = `
       <div style="font-family:system-ui,-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.7;color:#0D0D0D;">
         <p style="font-size:16px;font-weight:600;margin:0 0 16px;">${escapeHtml(r.name)}，你好</p>
@@ -126,7 +155,7 @@ async function notifyAmbassadors(request: RequestRow, assignments: Assignment[])
         <p style="margin:20px 0 0;">
           <a href="${answerLink}" style="display:inline-block;padding:10px 20px;background:#1F4388;color:#FFFFFF;border-radius:8px;text-decoration:none;font-weight:500;">查看并回复</a>
         </p>
-        <p style="margin:24px 0 0;font-size:12px;color:#8A8F9A;">如果不方便回答，也可以直接在此邮件回复说明。</p>
+        <p style="margin:24px 0 0;font-size:12px;color:#8A8F9A;">请点击上方链接，登录网站后回复问题。</p>
       </div>
     `
     const result = await sendEmail({
@@ -137,5 +166,8 @@ async function notifyAmbassadors(request: RequestRow, assignments: Assignment[])
     if (!result.ok) {
       console.error(`[notifyAmbassadors] send to ${r.email} failed:`, result.error)
     }
-  }
+    return { id: assignment.ambassador_id, ok: result.ok }
+  }))
+  const failedIds = results.filter(result => !result.ok).map(result => result.id)
+  return { sent: assignments.length - failedIds.length, failed: failedIds.length, failedIds }
 }

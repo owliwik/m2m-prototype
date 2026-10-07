@@ -85,8 +85,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: raErr.message }, { status: 500 })
   }
 
-  // Fire admin notification email (best-effort)
-  notifyAdmins(requestRow.id, userId, question, schoolId, ambassadorIds, isAnonymous).catch(
+  // Finish the notification before returning from the serverless request.
+  await notifyAdmins(requestRow.id, userId, question, schoolId, ambassadorIds, isAnonymous, req.nextUrl.origin).catch(
     err => console.error('[notifyAdmins] failed:', err),
   )
 
@@ -104,6 +104,7 @@ async function notifyAdmins(
   schoolId: string,
   ambassadorIds: string[],
   isAnonymous: boolean,
+  origin: string,
 ) {
   const [adminsRes, studentRes, schoolRes, ambsRes] = await Promise.all([
     admin.from('users').select('email, name').eq('role', 'admin'),
@@ -137,7 +138,7 @@ async function notifyAdmins(
     .filter((n): n is string => !!n)
     .join('、')
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? origin
   const link = `${baseUrl}/admin`
 
   const html = `
